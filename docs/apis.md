@@ -168,6 +168,15 @@ The response is Atom 1.0. Errors come back as an Atom entry [^ax-manual].
 - Harvesters should "use the dedicated site export.arxiv.org", at "a reasonable rate ... bursts at 4 requests per second with a 1 second sleep, per burst". "Please do not attempt to download the complete corpus programmatically". Use S3 for that [^ax-bulk].
 - **robots.txt (observed today):** `arxiv.org/robots.txt` has `Crawl-delay: 15` and `Allow: /pdf` [^ax-robotstxt]. `export.arxiv.org/robots.txt` has `Disallow: /` for all agents [^ax-export-robotstxt]. This conflicts with the bulk-data page's advice to harvest from export. We are fetching individual IDs, not crawling, but the conservative choice is `https://arxiv.org/pdf/{id}` at ≥15 s spacing.
 
+## 6. DOI handle API (doi.org), added 2026-11-28 in the M2 review
+
+Used for one thing: checking whether a cited DOI is registered with **any** registration agency (Crossref, DataCite, mEDRA, ...). A Crossref 404 alone doesn't mean a DOI is fake, because arXiv (`10.48550/...`) and Zenodo DOIs are DataCite DOIs.
+
+- `GET https://doi.org/api/handles/<doi>` returns JSON `{responseCode, handle, values}`. **responseCode 1 = success (HTTP 200)**, **100 = "Handle Not Found" (HTTP 404)**, 2 = error (HTTP 500), 200 = "Values Not Found" (HTTP 200) [^doi-res].
+- `GET https://doi.org/doiRA/<doi>` returns the registration agency, or "DOI does not exist" [^doi-res]. We don't use it: the handle API alone answers "registered?".
+- **Rate limits, required headers, terms for automated use:** none documented on these pages [^doi-res]. We run it conservatively at `{max: 2, duration: 1000}`, concurrency 1, and cache the responses (the proxy itself caches handle values with a 24 h TTL [^doi-res]). Site content is CC BY 4.0.
+- Nothing on the documentation pages discourages programmatic use. The REST API is described as CORS-compliant with JSONP support [^doi-res].
+
 ---
 
 ## Implications for our implementation
@@ -267,6 +276,7 @@ Caveats, stated precisely:
 [^ax-robots]: arXiv, Robots Beware. https://info.arxiv.org/help/robots.html
 [^ax-robotstxt]: https://arxiv.org/robots.txt (fetched 2026-11-27)
 [^ax-export-robotstxt]: https://export.arxiv.org/robots.txt (fetched 2026-11-27)
+[^doi-res]: DOI Foundation, "DOI Resolution Documentation" (updated 2020-07-04), sections 1, 4 and 5. https://www.doi.org/the-identifier/resources/factsheets/doi-resolution-documentation
 [^ax-group-429]: arXiv API discussion group (groups.google.com/a/arxiv.org), "Rate exceeded?", arXiv reply 17 Nov 2025. https://groups.google.com/a/arxiv.org/g/api/c/pNB3lnxf4mQ
 [^ax-group-2026]: arXiv API discussion group, "Request for guidance on arXiv API rate limits / higher-throughput access", Feb–Jun 2026. https://groups.google.com/a/arxiv.org/g/api/c/ycq8giRdZsQ
 
