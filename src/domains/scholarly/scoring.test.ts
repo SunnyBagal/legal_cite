@@ -25,15 +25,11 @@ describe("titleSimilarity", () => {
     expect(titleSimilarity("Neural machine translation by jointly learning to align and translate", "Neural machine translation by jointly learning to align and tranlate")).toBeGreaterThan(0.95);
   });
 
-  it("treats a cited main title as matching the record's title + subtitle", () => {
-    expect(titleSimilarity("Language models are few-shot learners", "Language Models are Few-Shot Learners: an extended study")).toBeGreaterThanOrEqual(0.9);
-  });
-
   it("is low for unrelated titles", () => {
     expect(titleSimilarity("Attention is all you need", "Deep residual learning for image recognition")).toBeLessThan(0.5);
   });
 
-  it("does not let a short generic title prefix-match a long one", () => {
+  it("is low for a short title against a longer title that starts with it", () => {
     expect(titleSimilarity("Deep learning", "Deep learning for symbolic mathematics")).toBeLessThan(0.75);
   });
 });
@@ -187,9 +183,39 @@ describe("scholarlyScorer: verdicts", () => {
   });
 });
 
-describe("titleSimilarity: subtitle rule needs 5+ words", () => {
-  it("does not treat a 4-word title as the main title of a longer one", () => {
+describe("scholarlyScorer: cited main title vs. record title + subtitle", () => {
+  it("is the same work when the record's title starts with the cited title and the authors agree", () => {
+    // 1706.03762 b26 cites "A decomposable attention model" (EMNLP 2016).
+    const parikh = au("Ankur Parikh", "Oscar Täckström", "Dipanjan Das", "Jakob Uszkoreit");
+    const r = ref({ title: "A decomposable attention model", authors: parikh, venue: "Empirical Methods in Natural Language Processing" });
+    const full = { title: "A Decomposable Attention Model for Natural Language Inference", authors: parikh, venue: "EMNLP" };
+    expect(score(r, [cand(full), s2(full)]).verdict).toBe("VERIFIED");
+  });
+
+  it("is not the same work when only the title prefix agrees", () => {
     // 2303.08774 b176: "AI and Job Quality" (Partnership on AI report) vs an SSRN paper.
-    expect(titleSimilarity("AI and Job Quality", "AI and Job Quality: Insights from Frontline Workers")).toBeLessThan(0.9);
+    const r = ref({ title: "AI and Job Quality", authors: au("Partnership AI") });
+    const ssrn = cand({ title: "AI and Job Quality: Insights from Frontline Workers", authors: au("Someone Else") });
+    expect(score(r, [ssrn]).verdict).not.toMatch(/VERIFIED|MISMATCH/);
+  });
+
+  it("needs at least 4 words for a prefix match", () => {
+    const r = ref({ title: "Deep learning", authors: au("Ian Goodfellow") });
+    expect(score(r, [cand({ title: "Deep learning for symbolic mathematics", authors: au("Ian Goodfellow") })]).verdict).not.toBe("VERIFIED");
+  });
+});
+
+describe("scholarlyScorer: book reviews that share the book's title", () => {
+  it("is AMBIGUOUS, not MISMATCH(authors), when a record is titled '<cited title> by <cited author>'", () => {
+    // 2303.08774 b133 "What We Owe The Future" (MacAskill): only reviews are indexed.
+    const r = ref({ title: "What We Owe The Future", authors: au("William MacAskill"), year: 2022, venue: null });
+    const review = (o: Partial<CandidateRecord>) => cand({ title: "What We Owe The Future", year: 2022, venue: "TPM", authors: au("Jean Kazez"), ...o });
+    const res = score(r, [
+      review({}),
+      s2({ title: "What We Owe The Future", year: 2022, authors: au("Jean Kazez"), venue: null }),
+      cand({ sourceId: "x", title: "What We Owe the Future by William MacAskill", year: 2024, authors: au("Daniel Sportiello") }),
+    ]);
+    expect(res.verdict).toBe("AMBIGUOUS");
+    expect(res.reason).toMatch(/review/i);
   });
 });

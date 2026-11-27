@@ -28,9 +28,8 @@ export function normalizeTitle(title: string): string {
 }
 
 /**
- * Similarity of two titles in [0, 1]: the best of character-level edit similarity,
- * the same on sorted tokens (word order changes), and a main-title/subtitle prefix rule
- * that only applies when the shorter title has at least 5 words.
+ * Similarity of two titles in [0, 1]: the better of character-level edit similarity and
+ * the same on sorted tokens (word order changes).
  */
 export function titleSimilarity(a: string, b: string): number {
   const na = normalizeTitle(a);
@@ -38,9 +37,15 @@ export function titleSimilarity(a: string, b: string): number {
   if (!na || !nb) return 0;
   if (na === nb) return 1;
   const sorted = (s: string) => s.split(" ").sort().join(" ");
+  return Math.max(editSimilarity(na, nb), editSimilarity(sorted(na), sorted(nb)));
+}
+
+/** One title is the other plus a subtitle ("X" vs "X for Natural Language Inference"), 4+ words. */
+export function isTitlePrefix(a: string, b: string): boolean {
+  const na = normalizeTitle(a);
+  const nb = normalizeTitle(b);
   const [short, long] = na.length <= nb.length ? [na, nb] : [nb, na];
-  const prefix = short.split(" ").length >= 5 && long.startsWith(`${short} `) ? 0.92 : 0;
-  return Math.max(editSimilarity(na, nb), editSimilarity(sorted(na), sorted(nb)), prefix);
+  return short.split(" ").length >= 4 && long.startsWith(`${short} `);
 }
 
 function editSimilarity(a: string, b: string): number {
@@ -89,9 +94,12 @@ function score(ref: Reference, candidates: CandidateRecord[]): ExistenceResult {
     return { verdict: "AMBIGUOUS", match: null, mismatches: [], scored, reason: "No title or identifier was extracted, so the reference can't be looked up." };
   }
 
-  const same = scored.filter(({ breakdown: b }) =>
+  const same = scored.filter(({ candidate: c, breakdown: b }) =>
     ref.title
-      ? b.titleSimilarity >= THRESHOLDS.sameWork || (b.identifierMatch === true && b.titleSimilarity >= THRESHOLDS.sameWorkWithId)
+      ? b.titleSimilarity >= THRESHOLDS.sameWork ||
+        (b.identifierMatch === true && b.titleSimilarity >= THRESHOLDS.sameWorkWithId) ||
+        // Main title vs title + subtitle is weaker evidence: only with author agreement.
+        (c.title !== null && isTitlePrefix(ref.title, c.title) && (b.authorOverlap ?? 0) >= THRESHOLDS.authorOverlap)
       : b.identifierMatch === true,
   );
 
@@ -99,6 +107,16 @@ function score(ref: Reference, candidates: CandidateRecord[]): ExistenceResult {
 
   const match = same[0]!;
   const mismatches = fieldMismatches(ref, same);
+  const review = mismatches.includes("authors") ? reviewOfCitedWork(ref, scored) : undefined;
+  if (review) {
+    return {
+      verdict: "AMBIGUOUS",
+      match,
+      mismatches,
+      scored,
+      reason: `Records with this title look like reviews of the cited work (e.g. "${review.candidate.title}"); the work itself was not found.`,
+    };
+  }
   if (mismatches.includes("authors") && ref.title && normalizeTitle(ref.title).split(" ").length <= THRESHOLDS.genericTitleWords) {
     return { verdict: "AMBIGUOUS", match, mismatches, scored, reason: `The title "${ref.title}" is generic and no record with it has matching authors.` };
   }
@@ -144,6 +162,17 @@ function notFound(ref: Reference, scored: ScoredCandidate[]): ExistenceResult {
         ? "No source returned any candidate."
         : `No record matches the cited ${ref.title ? "title" : "identifier"}.`;
   return { verdict: "NOT_FOUND", match: null, mismatches: [], scored, reason };
+}
+
+/** A record titled "<cited title> by <cited author>": a review that names the cited author. */
+function reviewOfCitedWork(ref: Reference, scored: ScoredCandidate[]): ScoredCandidate | undefined {
+  if (!ref.title) return undefined;
+  const title = normalizeTitle(ref.title);
+  const surnames = ref.authors.map((a) => normalizeTitle(a.surname).split(" ").at(-1)).filter((s): s is string => Boolean(s && s.length > 1));
+  return scored.find((s) => {
+    const t = normalizeTitle(s.candidate.title ?? "");
+    return t.startsWith(title) && t !== title && surnames.some((n) => t.slice(title.length).split(" ").includes(n));
+  });
 }
 
 /** A field fails only if NO record of the same work agrees; unknown values never fail. */
