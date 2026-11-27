@@ -13,11 +13,16 @@ export interface StageJob {
 
 export function redisConnection(url = config.redisUrl): ConnectionOptions {
   const u = new URL(url);
+  if (u.protocol !== "redis:" && u.protocol !== "rediss:") throw new Error(`REDIS_URL must be redis:// or rediss://, got ${u.protocol}`);
+  const db = u.pathname.length > 1 ? Number(u.pathname.slice(1)) : 0;
+  if (!Number.isInteger(db)) throw new Error(`REDIS_URL database must be a number: ${u.pathname}`);
   return {
     host: u.hostname,
     port: Number(u.port || 6379),
-    password: u.password || undefined,
-    db: u.pathname.length > 1 ? Number(u.pathname.slice(1)) : undefined,
+    username: u.username ? decodeURIComponent(u.username) : undefined,
+    password: u.password ? decodeURIComponent(u.password) : undefined,
+    db,
+    tls: u.protocol === "rediss:" ? {} : undefined,
     // Required by BullMQ workers (blocking commands).
     maxRetriesPerRequest: null,
   };
@@ -32,7 +37,11 @@ export const defaultJobOptions: DefaultJobOptions = {
 
 export function createQueues(connection: ConnectionOptions) {
   const queues = Object.fromEntries(
-    STAGES.map((s) => [s, new Queue<StageJob>(s, { connection, defaultJobOptions })]),
+    STAGES.map((s) => {
+      const q = new Queue<StageJob>(s, { connection, defaultJobOptions });
+      q.on("error", (err) => console.error(`[queue ${s}] ${err.message}`));
+      return [s, q];
+    }),
   ) as Record<Stage, Queue<StageJob>>;
   const flows = new FlowProducer({ connection });
   return {
