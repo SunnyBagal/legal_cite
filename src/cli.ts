@@ -90,7 +90,9 @@ program
         if (paper.status === "failed") throw new Error(paper.error ?? "pipeline failed");
         if (paper.status === DONE_STATUS) {
           const counts = await verdictCounts(db, paperId);
-          console.log(`  existence: ${Object.entries(counts).map(([v, n]) => `${v} ${n}`).join(", ") || "no references"}`);
+          const order = ["NOT_FOUND", "MISMATCH", "AMBIGUOUS", "ERROR", "VERIFIED"];
+          const ordered = Object.entries(counts).sort(([a], [b]) => order.indexOf(a) - order.indexOf(b));
+          console.log(`  existence: ${ordered.map(([v, n]) => `${v} ${n}`).join(", ") || "no references"}`);
           if (llm) {
             const rel = await relevanceSummary(db, paperId);
             const verdicts = Object.entries(rel.byVerdict).map(([v, n]) => `${v} ${n}`).join(", ") || "none";
@@ -129,6 +131,7 @@ program
   .option("--out <dir>", "write reports under this directory", "reports")
   .description("Re-render the JSON and HTML reports for a finished run from the database")
   .action(async (id: string, opts: { out: string }) => {
+    if (!/^\d+$/.test(id)) throw new Error(`paper id must be a number (the N in "paper #N"), got ${id}`);
     const { db, close } = createDb();
     try {
       const report = await loadReport(db, Number(id));

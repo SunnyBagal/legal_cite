@@ -112,6 +112,9 @@ export function createQueuedGateway(connection: ConnectionOptions, cacheUrl = co
   cache.on("error", (err) => console.error(`[api cache] ${err.message}`));
   const queues = new Map(API_NAMES.map((api) => [api, new Queue(`api-${api}`, { connection })]));
   const events = new Map(API_NAMES.map((api) => [api, new QueueEvents(`api-${api}`, { connection })]));
+  // Every in-flight waitUntilFinished adds a 'closing' listener to its queue; with 64
+  // concurrent resolve jobs Node's default limit of 10 prints MaxListenersExceededWarning.
+  for (const q of queues.values()) q.setMaxListeners(1000);
   const logError = (err: Error) => console.error(`[api queue] ${err.message}`);
   for (const q of queues.values()) q.on("error", logError);
   for (const e of events.values()) e.on("error", logError);
