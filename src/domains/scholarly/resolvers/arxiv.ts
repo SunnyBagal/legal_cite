@@ -16,13 +16,17 @@ export function parseArxivFeed(atom: string): CandidateRecord[] {
     const arxivId = arxivIdFromUrl(absUrl);
     const title = text(e, "title");
     if (!arxivId || !title || title === "Error") return [];
+    const year = Number(text(e, "published")?.slice(0, 4)) || null;
+    // Last revision year: citing the latest version (vN) is legitimate.
+    const updated = Number(text(e, "updated")?.slice(0, 4)) || null;
     return [
       {
         source: "arxiv",
         sourceId: arxivId,
         title,
         authors: Array.from(e.getElementsByTagName("author")).map((a) => authorFromName(text(a, "name") ?? "")),
-        year: Number(text(e, "published")?.slice(0, 4)) || null,
+        year,
+        ...(updated && updated !== year ? { altYears: [updated] } : {}),
         venue: text(e, "arxiv:journal_ref") ?? "arXiv",
         doi: normDoi(text(e, "arxiv:doi")),
         arxivId,

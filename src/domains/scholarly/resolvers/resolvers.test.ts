@@ -138,3 +138,14 @@ describe("arxiv", () => {
     expect(calls).toEqual([["arxiv", "https://export.arxiv.org/api/query?id_list=1512.03385"]]);
   });
 });
+
+describe("arxiv: latest revision year", () => {
+  it("offers the last-updated year as an alternative (citing the latest version is legitimate)", () => {
+    const [c] = parseArxivFeed(
+      `<feed xmlns="http://www.w3.org/2005/Atom"><entry><id>http://arxiv.org/abs/1912.01683v10</id>
+       <published>2019-12-03T00:00:00Z</published><updated>2023-01-28T00:00:00Z</updated>
+       <title>Optimal Policies Tend to Seek Power</title></entry></feed>`,
+    );
+    expect(c).toMatchObject({ year: 2019, altYears: [2023] });
+  });
+});
