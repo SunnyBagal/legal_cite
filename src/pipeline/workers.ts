@@ -1,11 +1,22 @@
 import { readFile } from "node:fs/promises";
 import { UnrecoverableError, Worker, type ConnectionOptions, type Job, type WorkerOptions } from "bullmq";
-import type { CitationDomain, Extractor } from "../core/types.js";
+import type { CitationDomain, Extractor, RelevanceVerifier } from "../core/types.js";
 import type { Db } from "../infra/db/client.js";
 import { ingest, pdfPath, type Source } from "./ingest.js";
 import { defaultJobOptions, STAGES, type Queues, type Stage, type StageJob } from "./queues.js";
 import { resolveReference } from "./resolve.js";
-import { getBibEntry, getPaper, saveExtraction, saveResolution, setPaperStatus, toReference } from "./store.js";
+import {
+  getBibEntry,
+  getCandidateRecords,
+  getContexts,
+  getExistence,
+  getPaper,
+  saveExtraction,
+  saveRelevance,
+  saveResolution,
+  setPaperStatus,
+  toReference,
+} from "./store.js";
 
 export interface PipelineDeps {
   db: Db;
@@ -13,6 +24,8 @@ export interface PipelineDeps {
   extractor: Extractor;
   /** Registered citation domains, keyed by Reference.kind. */
   domains: Map<string, CitationDomain>;
+  /** Null when no LLM is configured; papers must then be run with relevance off. */
+  verifier: RelevanceVerifier | null;
 }
 
 type Processor = (job: Job<StageJob>, deps: PipelineDeps) => Promise<unknown>;
@@ -60,18 +73,20 @@ const processors: Partial<Record<Stage, Processor>> = {
     // "resolving" before the flow exists, so a fast report can't be rewound to it.
     await setPaperStatus(db, paper.id, "resolving");
 
-    // One resolve job per reference, all children of the paper's report job: the report
-    // runs once every reference has finished, and a reference whose job fails for good is
-    // ignored rather than blocking the report (it shows up without a verdict).
+    // Per reference: resolve → relevance, all under the paper's report job. The report runs
+    // once every reference has finished; a job that fails for good is ignored rather than
+    // blocking the report (the reference then shows up without that verdict).
+    const child = { ...defaultJobOptions, ignoreDependencyOnFailure: true };
     await deps.queues.flows.add({
       name: "report",
       queueName: "report",
       data: { paperId: paper.id },
       children: bibEntryIds.map((bibEntryId) => ({
-        name: "resolve",
-        queueName: "resolve",
+        name: "relevance",
+        queueName: "relevance",
         data: { paperId: paper.id, bibEntryId },
-        opts: { ...defaultJobOptions, ignoreDependencyOnFailure: true },
+        opts: child,
+        children: [{ name: "resolve", queueName: "resolve", data: { paperId: paper.id, bibEntryId }, opts: child }],
       })),
       opts: { ...defaultJobOptions, jobId: reportJobId },
     });
@@ -95,6 +110,45 @@ const processors: Partial<Record<Stage, Processor>> = {
     return { verdict: resolution.result.verdict };
   },
 
+  /**
+   * Relevance, only for references that exist (VERIFIED or MISMATCH) and only when the run
+   * asked for it: one verdict per citing context, from the matched record's abstract.
+   */
+  async relevance(job, { db, domains, verifier }) {
+    const paper = await activePaper(db, job.data.paperId);
+    if (!paper || !paper.options.relevance) return { skipped: "relevance off" };
+    if (!verifier) throw new UnrecoverableError("relevance requested but no LLM is configured");
+    const existence = await getExistence(db, job.data.bibEntryId!);
+    if (!existence?.record || (existence.verdict !== "VERIFIED" && existence.verdict !== "MISMATCH")) {
+      return { skipped: `existence ${existence?.verdict ?? "missing"}` };
+    }
+    const entry = await getBibEntry(db, job.data.bibEntryId!);
+    const domain = domains.get(entry.kind);
+    const contexts = await getContexts(db, [entry.id]);
+    if (!domain || contexts.length === 0) return { skipped: "no citing contexts" };
+    const record = existence.record;
+    // The matched record may lack an abstract another record of the same work has (an arXiv
+    // or S2 record): try the matched one, then other same-title records, via the fetcher.
+    const sameWork = (await getCandidateRecords(db, entry.id))
+      .filter((c) => c.breakdown.titleSimilarity >= 0.9 && c.record.sourceId !== record.sourceId)
+      .map((c) => c.record);
+    let abstract: string | null = null;
+    for (const r of [record, ...sameWork]) {
+      abstract = await domain.abstracts.fetch(r);
+      if (abstract) break;
+    }
+    const title = record.title ?? entry.title ?? "";
+    const citedText = abstract ? `${title}\n\n${abstract}` : title;
+    for (const c of contexts) {
+      const result = await verifier.verify(
+        { referenceKey: entry.key, sentence: c.sentence, previousSentence: c.previousSentence, section: c.section, marker: c.marker, linkedBy: c.linkedBy as "grobid" | "numeric-fallback" },
+        { title, abstract },
+      );
+      await saveRelevance(db, c.id, result, citedText);
+    }
+    return { contexts: contexts.length };
+  },
+
   async report(job, { db }) {
     const paper = await activePaper(db, job.data.paperId);
     if (!paper) return { skipped: "paper failed" };
@@ -110,7 +164,8 @@ const WORKER_OPTIONS: Record<Stage, Pick<WorkerOptions, "concurrency" | "limiter
   // Resolve jobs mostly wait on the per-API queues, which enforce the rate limits;
   // a paper's worth of concurrency keeps fast APIs busy while slow ones drain.
   resolve: { concurrency: 64 },
-  relevance: { concurrency: 4 },
+  // LLM calls take ~3 s each; 8 in flight stays well inside provider rate limits.
+  relevance: { concurrency: 8 },
   report: { concurrency: 2 },
 };
 

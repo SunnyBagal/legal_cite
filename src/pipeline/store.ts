@@ -1,11 +1,13 @@
 import { and, asc, count, eq, inArray, notInArray } from "drizzle-orm";
 import type { ExtractedDocument, Reference } from "../core/types.js";
 import type { Db } from "../infra/db/client.js";
+import type { RelevanceResult } from "../core/types.js";
 import {
   bibEntries,
   citationContexts,
   existenceVerdicts,
   papers,
+  relevanceVerdicts,
   resolutionCandidates,
   resolverCalls,
   type PaperStatus,
@@ -202,4 +204,44 @@ export async function verdictCounts(db: Db, paperId: number): Promise<Record<str
     .where(eq(bibEntries.paperId, paperId))
     .groupBy(existenceVerdicts.verdict);
   return Object.fromEntries(rows.map((r) => [r.verdict ?? "ERROR", r.n]));
+}
+
+/** A reference's existence verdict and its matched record (null record if none). */
+export async function getExistence(db: Db, bibEntryId: number) {
+  const [row] = await db
+    .select({ verdict: existenceVerdicts.verdict, record: resolutionCandidates.record })
+    .from(existenceVerdicts)
+    .leftJoin(resolutionCandidates, eq(resolutionCandidates.id, existenceVerdicts.matchedCandidateId))
+    .where(eq(existenceVerdicts.bibEntryId, bibEntryId));
+  return row ?? null;
+}
+
+/** Upsert one context's relevance verdict (idempotent for retried jobs). */
+export async function saveRelevance(db: Db, citationContextId: number, r: RelevanceResult, citedText: string): Promise<void> {
+  const values = { citationContextId, verdict: r.verdict, reason: r.reason, method: r.method, similarity: r.similarity, model: r.model, citedText };
+  await db
+    .insert(relevanceVerdicts)
+    .values(stripNul(values))
+    .onConflictDoUpdate({ target: relevanceVerdicts.citationContextId, set: stripNul(values) });
+}
+
+/** Relevance verdict → count over a paper's citing contexts that got one. */
+export async function relevanceCounts(db: Db, paperId: number): Promise<Record<string, number>> {
+  const rows = await db
+    .select({ verdict: relevanceVerdicts.verdict, n: count() })
+    .from(relevanceVerdicts)
+    .innerJoin(citationContexts, eq(citationContexts.id, relevanceVerdicts.citationContextId))
+    .where(eq(citationContexts.paperId, paperId))
+    .groupBy(relevanceVerdicts.verdict);
+  return Object.fromEntries(rows.map((r) => [r.verdict, r.n]));
+}
+
+/** Every stored candidate record for a reference, best first. */
+export async function getCandidateRecords(db: Db, bibEntryId: number) {
+  const rows = await db
+    .select({ record: resolutionCandidates.record, breakdown: resolutionCandidates.breakdown })
+    .from(resolutionCandidates)
+    .where(eq(resolutionCandidates.bibEntryId, bibEntryId))
+    .orderBy(asc(resolutionCandidates.rank));
+  return rows;
 }
