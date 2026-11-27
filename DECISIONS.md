@@ -206,9 +206,9 @@ scorer in `src/domains/scholarly/scoring.ts`, whose thresholds are named in `THR
   - The record's title is the cited title plus a subtitle (4+ words) and the authors
     agree. On 1706.03762, a word-count rule alone broke b26 or let 2303.08774 b176
     through.
-- **Field checks** (`authors` ≥ 50% surname overlap, `year` ±1, `venue`, `doi`,
-  `arxivId`). A field fails only if no record of the same work agrees, and unknown values
-  never fail:
+- **Field checks** (`authors` ≥ 50% surname overlap, `year` ±1, `venue`). A field
+  fails only if no record of the same work agrees, and unknown values never fail. `doi`
+  and `arxivId` follow the identifier rule below, revised in the M2 review.
   - **Different sources record different years:** Crossref publishes print, online and
     issued years, and all are accepted. arXiv's latest-revision year is accepted too,
     since citing vN is legitimate.
@@ -230,3 +230,78 @@ scorer in `src/domains/scholarly/scoring.ts`, whose thresholds are named in `THR
 - **Contact email.** `CONTACT_EMAIL` is empty by default. I didn't put your address
   into requests to external APIs without your approval, so Crossref runs on its public
   pool (5 and 1 requests/s). Set the email in `.env` to get the polite pool.
+
+## M2 review (gstack `review`) outcomes
+
+The run included 5 specialists (testing, maintainability, security, performance,
+simplification), the Claude adversarial pass and a red team. Codex was skipped for the
+same reason as in M1. The fixes are separate commits after the M2 feature commits.
+
+- **Identifier mismatches need direct evidence.** The old rule flagged `doi` when any
+  record of the work carried a different DOI. That accuses correct citations in two
+  common cases: works with several DOIs, and DataCite DOIs (arXiv `10.48550`, Zenodo),
+  which Crossref answers with 404. `doi` (or `arxivId`) now fails only in one of these
+  cases:
+  - doi.org's handle API says the DOI isn't registered with any agency. This adds a new
+    API, cited in docs/apis.md §6, which documents no rate limits, so we limit it to
+    2 requests/s.
+  - arXiv says the ID doesn't exist.
+  - Looking up the cited identifier returns a different work.
+
+  A failed lookup is no evidence either way. Identifier mismatches don't need the
+  two-source rule, because they rest on authoritative lookups.
+- **Venue-only disagreement gives AMBIGUOUS, never MISMATCH.** Citation styles
+  abbreviate venues in too many ways ("Phys. Rev. Lett.", ISO4, IEEE). The matcher now
+  handles abbreviations (an abbreviation's letters form a subsequence of the full word,
+  in order) and acronyms built before stopwords are removed (ICRA, KDD). A remaining
+  disagreement is still listed in `mismatches`.
+- **Outages never produce NOT_FOUND.** If any lookup failed and nothing matched, the
+  verdict is AMBIGUOUS, the reason names the failed resolvers, and `degraded` is set. The
+  resolve job first retries while attempts remain; successful calls are cached, so a
+  retry costs almost nothing.
+- **Journal-style references without an article title** (Nature, PRL) keep the journal
+  as venue. The record found by the cited DOI counts as the same work when authors and
+  year agree, or when the cited "title" is its venue.
+- **Crossref `query.bibliographic` gets the raw reference string.** That is what the
+  query is designed for, and it covers references whose title GROBID lost.
+- **Any-script titles.** Normalization keeps `\p{L}\p{N}`, so CJK, Cyrillic and Greek
+  letters such as β survive. **Group authors** ("ATLAS Collaboration") are skipped in the
+  author check.
+- **Gateway:**
+  - The `waitUntilFinished` race falls back to the cache.
+  - Malformed 200 responses are never cached, and empty arXiv feeds get a 1-day TTL.
+  - A 403, or OpenAlex's daily budget, pauses that API (the arXiv terms treat continued
+    requests after a 403 as an attack).
+  - Bodies are stored once, in the cache.
+  - **The cache moved to its own Redis** (`redis-cache`, port 6381, `allkeys-lru`,
+    512 MB). BullMQ needs `noeviction`, and one shared instance can't have both policies.
+    The 655 existing cache entries were moved over with their TTLs intact.
+- **Performance:**
+  - Resolve concurrency went from 8 to 64; the per-API queues still enforce the rate
+    limits.
+  - arXiv IDs are batched: one `id_list` request per 50 IDs, primed per ID through the
+    `CitationDomain.prefetch` hook.
+  - On 1706.03762 the run went from 72 s to 27 s. 2303.08774 took 2m58s with every
+    Crossref query re-fetched, against 9m52s cold before.
+- **Pipeline:**
+  - The report job ID is scoped to the paper row (paper ID plus creation time). A
+    retried extract skips the work when the flow already exists.
+  - `resolving` is set before the flow is created, and `reported`/`failed` are terminal.
+  - NUL bytes are stripped before saving.
+  - An interrupted run force-closes its workers.
+- **ReDoS:** `stripPublisher` now does linear string work and runs only on book titles.
+- **Tests:**
+  - The gateway's classification and credential handling are tested with an injected
+    `fetch`.
+  - Postgres integration tests run separately as `pnpm test:int`, so unit tests need no
+    services.
+  - Two scorer tests that encoded the old unsafe DOI rule were updated to the
+    evidence-based rule, deliberately and in the same commit as the rule change.
+- **Deferred, with reasons:**
+  - **Fields are checked independently across records**, which could let a chimera
+    citation pass (authors from one record, year from another). It's rare, and checking
+    per record would reintroduce the cross-source year false positives.
+  - **Same-title different works** with titles of 4–6 words can still give
+    MISMATCH(authors) when two sources hold the other work. That's indistinguishable
+    from swapped authors without more signal; the eval measures it.
+  - **Concurrent runs** still share queues. Documented as "run one at a time".
