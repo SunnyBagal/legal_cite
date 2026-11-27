@@ -83,6 +83,8 @@ export interface CandidateRecord {
   arxivId: string | null;
   url: string | null;
   abstract: string | null;
+  /** Set when this record came from looking up the cited identifier itself. */
+  lookup?: "doi" | "arxivId";
 }
 
 /**
@@ -106,6 +108,14 @@ export interface ResolverResult {
   candidates: CandidateRecord[];
   /** The raw API response(s), stored for debugging. */
   raw: unknown;
+  /** Direct evidence besides candidates, e.g. { "doi.registered": false }. */
+  facts?: Record<string, boolean>;
+}
+
+/** What the scorer knows beyond the candidates: lookup facts and which lookups failed. */
+export interface ScoringContext {
+  facts: Record<string, boolean>;
+  failedResolvers: string[];
 }
 
 export type ExistenceVerdict = "VERIFIED" | "MISMATCH" | "NOT_FOUND" | "AMBIGUOUS";
@@ -148,9 +158,12 @@ export interface ExistenceResult {
   reason: string;
 }
 
-/** Deterministic, pure. No I/O, no LLM. */
+/**
+ * Deterministic, pure. No I/O, no LLM. `context` carries lookup facts and failures so the
+ * scorer never mistakes an outage for absence, or an unchecked identifier for a fake one.
+ */
 export interface ExistenceScorer {
-  score(ref: Reference, candidates: CandidateRecord[]): ExistenceResult;
+  score(ref: Reference, candidates: CandidateRecord[], context?: ScoringContext): ExistenceResult;
 }
 
 export type RelevanceLabel = "SUPPORTS" | "PARTIAL" | "UNRELATED" | "CANNOT_TELL";
@@ -202,6 +215,8 @@ export interface AbstractFetcher {
  */
 export interface CitationDomain {
   kind: string;
+  /** Optional: warm caches for a whole document's references at once (e.g. batched lookups). */
+  prefetch?(refs: Reference[]): Promise<void>;
   resolvers: Resolver[];
   scorer: ExistenceScorer;
   abstracts: AbstractFetcher;

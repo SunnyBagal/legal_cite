@@ -1,6 +1,6 @@
 /**
  * Deterministic existence scoring for scholarly references. No I/O, no LLM.
- * See DECISIONS.md §Existence scoring for the thresholds and their rationale.
+ * See DECISIONS.md §Existence resolution (M2) for the thresholds and the evidence behind them.
  */
 import type {
   Author,
@@ -11,10 +11,11 @@ import type {
   Reference,
   ScoreBreakdown,
   ScoredCandidate,
+  ScoringContext,
 } from "../../core/types.js";
 
 
-/** Lowercase ASCII words: strips markup, diacritics, braces, punctuation and PDF line-break hyphenation. */
+/** Lowercase words in any script: strips markup, diacritics, braces, punctuation and PDF line-break hyphenation. */
 export function normalizeTitle(title: string): string {
   return title
     .replace(/<[^>]+>/g, " ")
@@ -23,7 +24,7 @@ export function normalizeTitle(title: string): string {
     .replace(/\p{M}/gu, "")
     .replace(/[{}]/g, "")
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
 }
 
@@ -67,7 +68,10 @@ function levenshtein(a: string, b: string): number {
 
 // ---------------------------------------------------------------- the scorer
 
-/** Thresholds. Tuned against eval/ (see eval/RESULTS.md); change them only with an eval run. */
+/**
+ * Thresholds. Set from the 1706.03762 / 2303.08774 runs (DECISIONS.md); re-check with the
+ * eval harness (eval/) before changing any of them.
+ */
 export const THRESHOLDS = {
   /** Title similarity at or above which a candidate is the cited work. */
   sameWork: 0.9,
@@ -81,11 +85,15 @@ export const THRESHOLDS = {
   yearTolerance: 1,
   /** Titles this short are too generic to call MISMATCH(authors) on; → AMBIGUOUS. */
   genericTitleWords: 3,
+  /** Shared content-token fraction for two full venue names to match. */
+  venueTokenOverlap: 0.6,
 } as const;
 
 export const scholarlyScorer: ExistenceScorer = { score };
 
-function score(ref: Reference, candidates: CandidateRecord[]): ExistenceResult {
+const NO_CONTEXT: ScoringContext = { facts: {}, failedResolvers: [] };
+
+function score(ref: Reference, candidates: CandidateRecord[], context: ScoringContext = NO_CONTEXT): ExistenceResult {
   const scored = dedupe(candidates)
     .map((candidate) => ({ candidate, breakdown: breakdown(ref, candidate) }))
     .sort((a, b) => b.breakdown.total - a.breakdown.total);
@@ -94,19 +102,12 @@ function score(ref: Reference, candidates: CandidateRecord[]): ExistenceResult {
     return { verdict: "AMBIGUOUS", match: null, mismatches: [], scored, reason: "No title or identifier was extracted, so the reference can't be looked up." };
   }
 
-  const same = scored.filter(({ candidate: c, breakdown: b }) =>
-    ref.title
-      ? b.titleSimilarity >= THRESHOLDS.sameWork ||
-        (b.identifierMatch === true && b.titleSimilarity >= THRESHOLDS.sameWorkWithId) ||
-        // Main title vs title + subtitle is weaker evidence: only with author agreement.
-        (c.title !== null && isTitlePrefix(ref.title, c.title) && (b.authorOverlap ?? 0) >= THRESHOLDS.authorOverlap)
-      : b.identifierMatch === true,
-  );
+  const same = scored.filter(({ candidate: c, breakdown: b }) => isSameWork(ref, c, b));
 
-  if (same.length === 0) return notFound(ref, scored);
+  if (same.length === 0) return notFound(ref, scored, context);
 
   const match = same[0]!;
-  const mismatches = fieldMismatches(ref, same);
+  const mismatches = fieldMismatches(ref, same, scored, context);
   const review = mismatches.includes("authors") ? reviewOfCitedWork(ref, scored) : undefined;
   if (review) {
     return {
@@ -124,7 +125,9 @@ function score(ref: Reference, candidates: CandidateRecord[]): ExistenceResult {
   // One database record can be wrong (an S2 record dated 2026) or be a different item with
   // the same title (a book review). A MISMATCH needs two independent sources to agree.
   const sources = new Set(same.map((s) => s.candidate.source));
-  if (mismatches.length > 0 && sources.size < 2) {
+  const idOnly = mismatches.every((m) => m === "doi" || m === "arxivId");
+  // Identifier mismatches rest on direct lookups (registry / lookup record), not on agreement.
+  if (mismatches.length > 0 && sources.size < 2 && !idOnly) {
     return {
       verdict: "AMBIGUOUS",
       match,
@@ -133,12 +136,44 @@ function score(ref: Reference, candidates: CandidateRecord[]): ExistenceResult {
       reason: `Only one source (${where}) has this work, and it disagrees on: ${mismatches.join(", ")}. Needs corroboration.`,
     };
   }
+  // Citation styles abbreviate venues in too many ways for a venue alone to accuse anyone.
+  if (mismatches.length === 1 && mismatches[0] === "venue") {
+    return { verdict: "AMBIGUOUS", match, mismatches, scored, reason: `Found in ${where}; only the venue differs ("${ref.venue}" vs "${match.candidate.venue}").` };
+  }
   return mismatches.length === 0
     ? { verdict: "VERIFIED", match, mismatches, scored, reason: `Matched ${where}.` }
     : { verdict: "MISMATCH", match, mismatches, scored, reason: `Found in ${where}, but these fields disagree: ${mismatches.join(", ")}.` };
 }
 
-function notFound(ref: Reference, scored: ScoredCandidate[]): ExistenceResult {
+/**
+ * Same work as the cited reference? Title similarity >= 0.9; or a looser title with a matching
+ * identifier; or main title vs title + subtitle with author agreement. A record found by looking
+ * up the cited identifier also counts when authors and year agree or the cited "title" is really
+ * its venue (journal-style references without an article title).
+ */
+function isSameWork(ref: Reference, c: CandidateRecord, b: ScoreBreakdown): boolean {
+  if (!ref.title) return b.identifierMatch === true;
+  if (b.titleSimilarity >= THRESHOLDS.sameWork) return true;
+  if (b.identifierMatch === true && b.titleSimilarity >= THRESHOLDS.sameWorkWithId) return true;
+  const authorsAgree = (b.authorOverlap ?? 0) >= THRESHOLDS.authorOverlap;
+  if (c.title !== null && isTitlePrefix(ref.title, c.title) && authorsAgree) return true;
+  if (c.lookup) {
+    const yearOk = b.yearDelta === null || b.yearDelta <= THRESHOLDS.yearTolerance;
+    return (authorsAgree && yearOk) || venuesMatch(ref.title, c.venue) === true;
+  }
+  return false;
+}
+
+function notFound(ref: Reference, scored: ScoredCandidate[], context: ScoringContext): ExistenceResult {
+  if (context.failedResolvers.length > 0) {
+    return {
+      verdict: "AMBIGUOUS",
+      match: null,
+      mismatches: [],
+      scored,
+      reason: `Not found, but some lookups failed (${context.failedResolvers.join(", ")}), so it can't be ruled out.`,
+    };
+  }
   const closest = scored.reduce<ScoredCandidate | null>(
     (best, s) => (best === null || s.breakdown.titleSimilarity > best.breakdown.titleSimilarity ? s : best),
     null,
@@ -152,11 +187,12 @@ function notFound(ref: Reference, scored: ScoredCandidate[]): ExistenceResult {
       reason: `Closest record has a similar but different title (${closest.breakdown.titleSimilarity.toFixed(2)}): "${closest.candidate.title}".`,
     };
   }
-  const doiTarget = ref.doi ? scored.find((s) => s.candidate.doi === normDoi(ref.doi)) : undefined;
-  const webPage = !ref.doi && !ref.arxivId && /https?:\/\/|www\./i.test(ref.raw ?? "");
-  const reason = doiTarget
+  const doiTarget = scored.find((s) => s.candidate.lookup === "doi");
+  const reason = context.facts["doi.registered"] === false
+    ? "The cited DOI is not registered with any DOI agency, and the cited title was not found."
+    : doiTarget
     ? `The cited DOI resolves to a different work ("${doiTarget.candidate.title}") and the cited title was not found.`
-    : webPage
+    : isWebPage(ref)
       ? "Not in Crossref, Semantic Scholar, OpenAlex or arXiv. The citation points to a web page, which these indexes don't cover; check the URL by hand."
       : scored.length === 0
         ? "No source returned any candidate."
@@ -175,20 +211,27 @@ function reviewOfCitedWork(ref: Reference, scored: ScoredCandidate[]): ScoredCan
   });
 }
 
-/** A field fails only if NO record of the same work agrees; unknown values never fail. */
-function fieldMismatches(ref: Reference, same: ScoredCandidate[]): MismatchField[] {
+/** Citation points at a web page: a URL and no DOI/arXiv id. Scholarly indexes don't cover these. */
+export function isWebPage(ref: Reference): boolean {
+  return !ref.doi && !ref.arxivId && /https?:\/\/|www\./i.test(ref.raw ?? "");
+}
+
+/**
+ * A field fails only if NO record of the same work agrees; unknown values never fail.
+ * Identifiers need direct evidence: the registry says the DOI doesn't exist, arXiv says the
+ * id doesn't exist, or looking the identifier up returned a different work. A record merely
+ * carrying another DOI proves nothing (works have several DOIs; DataCite vs Crossref).
+ */
+function fieldMismatches(ref: Reference, same: ScoredCandidate[], scored: ScoredCandidate[], ctx: ScoringContext): MismatchField[] {
   const out: MismatchField[] = [];
   const b = same.map((s) => s.breakdown);
-  const c = same.map((s) => s.candidate);
   if (!b.some((x) => x.authorOverlap === null || x.authorOverlap >= THRESHOLDS.authorOverlap)) out.push("authors");
   if (!b.some((x) => x.yearDelta === null || x.yearDelta <= THRESHOLDS.yearTolerance)) out.push("year");
   if (!b.some((x) => x.venueMatch !== false)) out.push("venue");
-  // Identifiers: flag only when a record of the work carries a different one (DOI lookups of
-  // the cited DOI are among the candidates, so works with several DOIs still pass).
-  const doi = normDoi(ref.doi);
-  if (doi && !c.some((x) => x.doi === doi) && c.some((x) => x.doi)) out.push("doi");
-  const arxiv = normArxiv(ref.arxivId);
-  if (arxiv && !c.some((x) => normArxiv(x.arxivId) === arxiv) && c.some((x) => x.arxivId)) out.push("arxivId");
+  const pointsElsewhere = (kind: "doi" | "arxivId") =>
+    scored.some((s) => s.candidate.lookup === kind && !same.includes(s));
+  if (ref.doi && (ctx.facts["doi.registered"] === false || pointsElsewhere("doi"))) out.push("doi");
+  if (ref.arxivId && (ctx.facts["arxiv.exists"] === false || pointsElsewhere("arxivId"))) out.push("arxivId");
   return out;
 }
 
@@ -216,8 +259,11 @@ const round = (x: number) => Math.round(x * 1000) / 1000;
  * Matching on any token absorbs GROBID's splitting ("Jimmy Lei Ba" → surname "Lei Ba";
  * "Quoc V. Le" → "V Quoc" + "Le"). Null when either side has no authors.
  */
+const NON_SURNAMES = new Set(["al", "others", "collaboration", "team", "consortium", "group", "committee", "project", "initiative", "contributors"]);
+
 function surnameOverlap(cited: Author[], record: Author[]): number | null {
-  const surnames = cited.map((a) => normalizeTitle(a.surname).split(" ").at(-1) ?? "").filter((s) => s.length > 1 && s !== "al" && s !== "others");
+  // Group authors ("ATLAS Collaboration", "Gemini Team") can't be matched against individuals.
+  const surnames = cited.map((a) => normalizeTitle(a.surname).split(" ").at(-1) ?? "").filter((s) => s.length > 1 && !NON_SURNAMES.has(s));
   if (surnames.length === 0 || record.length === 0) return null;
   const tokens = new Set(record.flatMap((a) => normalizeTitle(`${a.name} ${a.surname}`).split(" ")));
   return surnames.filter((s) => tokens.has(s)).length / surnames.length;
@@ -232,9 +278,21 @@ function idMatch(ref: Reference, c: CandidateRecord): boolean | null {
   return checks.length === 0 ? null : checks.some(Boolean);
 }
 
+/** Canonical DOI: lowercase, no resolver prefix, no "doi:", no %-encoding, no trailing punctuation. */
 export function normDoi(doi: string | null | undefined): string | null {
-  const d = doi?.trim().toLowerCase().replace(/^(https?:\/\/(dx\.)?doi\.org\/|doi:)/, "");
-  return d ? d : null;
+  if (!doi) return null;
+  let d = doi.trim().toLowerCase();
+  try {
+    d = decodeURIComponent(d);
+  } catch {
+    // keep as is
+  }
+  d = d
+    .replace(/^(https?:\/\/)?(dx\.)?doi\.org\//, "")
+    .replace(/^doi:\s*/, "")
+    .replace(/\s+/g, "")
+    .replace(/[.,;]+$/, "");
+  return d.startsWith("10.") ? d : null;
 }
 
 function normArxiv(id: string | null | undefined): string | null {
@@ -265,25 +323,52 @@ const VENUE_ALIASES: [string, RegExp][] = [
 ];
 
 const VENUE_STOPWORDS = new Set(["of", "the", "in", "on", "and", "for", "proceedings", "proc", "annual", "conference", "conf", "international", "journal", "ieee", "acm", "th", "st", "nd", "rd"]);
+const ACRONYM_SKIP = new Set(["of", "the", "in", "on", "and", "for", "a", "an"]);
+
+/** "phys" ⊑ "physical", "natl" ⊑ "national", "j" ⊑ "journal": same first letter, letters in order. */
+function abbreviates(short: string, long: string): boolean {
+  if (short.length > long.length || short[0] !== long[0]) return false;
+  let i = 0;
+  for (const ch of long) if (ch === short[i]) i++;
+  return i === short.length;
+}
+
+/** Every token of the shorter list abbreviates (or equals) a distinct token of the longer, in order. */
+function abbreviatedForm(a: string[], b: string[]): boolean {
+  const [few, many] = a.length <= b.length ? [a, b] : [b, a];
+  let j = 0;
+  for (const t of few) {
+    while (j < many.length && !abbreviates(t, many[j]!) && !abbreviates(many[j]!, t)) j++;
+    if (j === many.length) return false;
+    j++;
+  }
+  return true;
+}
 
 /** true/false when both venues are known; null if either is missing or a preprint server. */
 export function venuesMatch(a: string | null, b: string | null): boolean | null {
   if (!a || !b) return null;
-  const na = normalizeTitle(a).replace(/\d+/g, " ").replace(/\s+/g, " ").trim();
-  const nb = normalizeTitle(b).replace(/\d+/g, " ").replace(/\s+/g, " ").trim();
+  const words = (s: string) => normalizeTitle(s).replace(/\d+/g, " ").split(" ").filter(Boolean);
+  const wa = words(a);
+  const wb = words(b);
+  const na = wa.join(" ");
+  const nb = wb.join(" ");
   if (!na || !nb || PREPRINT.test(na) || PREPRINT.test(nb)) return null;
   const canon = (s: string) => VENUE_ALIASES.find(([, re]) => re.test(s))?.[0] ?? null;
   const ca = canon(na);
   const cb = canon(nb);
   if (ca && cb) return ca === cb;
-  const ta = na.split(" ").filter((t) => !VENUE_STOPWORDS.has(t));
-  const tb = nb.split(" ").filter((t) => !VENUE_STOPWORDS.has(t));
+  // Acronyms from the full name, stopwords like "International Conference" included (ICRA).
+  const initials = (ws: string[]) => ws.filter((w) => !ACRONYM_SKIP.has(w)).map((w) => w[0]).join("");
+  const isAcronymOf = (acr: string[], full: string[]) => acr.length === 1 && acr[0]!.length >= 3 && full.length >= 3 && abbreviates(acr[0]!, initials(full));
+  if (isAcronymOf(wa, wb) || isAcronymOf(wb, wa)) return true;
+  const ta = wa.filter((t) => !VENUE_STOPWORDS.has(t));
+  const tb = wb.filter((t) => !VENUE_STOPWORDS.has(t));
   if (ta.length === 0 || tb.length === 0) return null;
-  const acronym = (ts: string[]) => ts.map((t) => t[0]).join("");
-  if ((ta.length === 1 && ta[0] === acronym(tb)) || (tb.length === 1 && tb[0] === acronym(ta))) return true;
+  if (abbreviatedForm(ta, tb)) return true; // "Phys Rev Lett" vs "Physical Review Letters"
   const sa = new Set(ta);
   const shared = tb.filter((t) => sa.has(t)).length;
-  return shared / Math.min(ta.length, tb.length) >= 0.6;
+  return shared / Math.min(ta.length, tb.length) >= THRESHOLDS.venueTokenOverlap;
 }
 
 function dedupe(cs: CandidateRecord[]): CandidateRecord[] {

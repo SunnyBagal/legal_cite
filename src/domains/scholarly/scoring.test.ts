@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Author, CandidateRecord, Reference } from "../../core/types.js";
-import { normalizeTitle, scholarlyScorer, titleSimilarity } from "./scoring.js";
+import { normDoi, normalizeTitle, scholarlyScorer, titleSimilarity, venuesMatch } from "./scoring.js";
 
 describe("normalizeTitle", () => {
   it.each([
@@ -118,14 +118,14 @@ describe("scholarlyScorer: verdicts", () => {
     expect(score(ref({ year: 2018 }), [arxiv, journal]).verdict).toBe("VERIFIED");
   });
 
-  it("MISMATCH(doi) for a real title with a fabricated DOI", () => {
-    const res = score(ref({ doi: "10.9999/fake.2016.123" }), [cand(), s2()]);
+  it("MISMATCH(doi) for a real title with a fabricated DOI (registry: not registered)", () => {
+    const res = scholarlyScorer.score(ref({ doi: "10.9999/fake.2016.123" }), [cand(), s2()], { facts: { "doi.registered": false }, failedResolvers: [] });
     expect(res.verdict).toBe("MISMATCH");
     expect(res.mismatches).toEqual(["doi"]);
   });
 
   it("NOT_FOUND, naming the DOI, when the cited DOI resolves to a different work and the title isn't found", () => {
-    const other = cand({ title: "A survey of graph neural networks", doi: "10.1000/xyz", authors: au("A Person") });
+    const other = cand({ title: "A survey of graph neural networks", doi: "10.1000/xyz", authors: au("A Person"), lookup: "doi" });
     const res = score(ref({ title: "Fabricated title about residual quantum widgets", doi: "10.1000/xyz" }), [other]);
     expect(res.verdict).toBe("NOT_FOUND");
     expect(res.reason).toMatch(/DOI/);
@@ -217,5 +217,104 @@ describe("scholarlyScorer: book reviews that share the book's title", () => {
     ]);
     expect(res.verdict).toBe("AMBIGUOUS");
     expect(res.reason).toMatch(/review/i);
+  });
+});
+
+// ---------------------------------------------------------------- M2 review regressions
+
+describe("scholarlyScorer: venues in abbreviated citation styles (M2 review)", () => {
+  it.each([
+    ["Phys. Rev. Lett.", "Physical Review Letters"],
+    ["IEEE Trans. Pattern Anal. Mach. Intell.", "IEEE Transactions on Pattern Analysis and Machine Intelligence"],
+    ["N. Engl. J. Med.", "New England Journal of Medicine"],
+    ["Proc. Natl. Acad. Sci. USA", "Proceedings of the National Academy of Sciences"],
+    ["ICRA", "International Conference on Robotics and Automation"],
+    ["KDD", "Knowledge Discovery and Data Mining"],
+  ])("%s matches %s", (a, b) => {
+    expect(venuesMatch(a, b)).not.toBe(false);
+  });
+
+  it("never calls a venue-only disagreement a MISMATCH (AMBIGUOUS, field listed)", () => {
+    const res = score(ref({ venue: "Nature" }), [cand(), s2()]);
+    expect(res.verdict).toBe("AMBIGUOUS");
+    expect(res.mismatches).toEqual(["venue"]);
+  });
+});
+
+describe("scholarlyScorer: identifiers need direct evidence (M2 review)", () => {
+  const ctx = (facts: Record<string, boolean>, failed: string[] = []) => ({ facts, failedResolvers: failed });
+
+  it("does not flag a correct DOI that differs from another record's DOI (multi-DOI works, DataCite)", () => {
+    // cited arXiv DataCite DOI; records carry the journal DOI
+    const res = scholarlyScorer.score(ref({ doi: "10.48550/arXiv.1512.03385" }), [cand(), s2()], ctx({ "doi.registered": true }));
+    expect(res.verdict).toBe("VERIFIED");
+  });
+
+  it("flags MISMATCH(doi) when the DOI is registered nowhere", () => {
+    const c = { title: "Attention Is All You Need", authors: au("Ashish Vaswani"), year: 2017, doi: null, arxivId: "1706.03762", venue: null };
+    const r = ref({ title: "Attention is all you need", authors: au("Ashish Vaswani"), year: 2017, venue: null, doi: "10.9999/fake" });
+    const res = scholarlyScorer.score(r, [s2(c), cand({ ...c, source: "arxiv", sourceId: "1706.03762" })], ctx({ "doi.registered": false }));
+    expect(res.verdict).toBe("MISMATCH");
+    expect(res.mismatches).toEqual(["doi"]);
+  });
+
+  it("flags MISMATCH(doi) when the cited DOI resolves to a different work", () => {
+    const other = cand({ sourceId: "10.1000/other", doi: "10.1000/other", title: "A survey of graph networks", authors: au("A Person"), lookup: "doi" });
+    const res = scholarlyScorer.score(ref({ doi: "10.1000/other" }), [other, cand({ sourceId: "x1", doi: "10.1109/cvpr.2016.90" }), s2()], ctx({ "doi.registered": true }));
+    expect(res.verdict).toBe("MISMATCH");
+    expect(res.mismatches).toEqual(["doi"]);
+  });
+
+  it("does not flag the DOI when the DOI lookups failed (no evidence)", () => {
+    const res = scholarlyScorer.score(ref({ doi: "10.9999/fake" }), [cand(), s2()], ctx({}, ["crossref-doi", "doi-registry"]));
+    expect(res.mismatches).not.toContain("doi");
+  });
+
+  it("normalizes messy DOIs before comparing", () => {
+    expect(normDoi(" doi: 10.1109/CVPR.2016.90. ")).toBe("10.1109/cvpr.2016.90");
+    expect(normDoi("https://doi.org/10.1109%2Fcvpr.2016.90")).toBe("10.1109/cvpr.2016.90");
+    expect(normDoi("doi.org/10.1109/cvpr.2016.90")).toBe("10.1109/cvpr.2016.90");
+  });
+
+  it("flags MISMATCH(arxivId) when the arXiv id does not exist", () => {
+    const res = scholarlyScorer.score(ref({ arxivId: "9999.99999" }), [cand(), s2()], ctx({ "arxiv.exists": false }));
+    expect(res.verdict).toBe("MISMATCH");
+    expect(res.mismatches).toEqual(["arxivId"]);
+  });
+
+  it("accepts the record found by the cited DOI when GROBID put the journal name in the title", () => {
+    // Nature/PRL style: "A. Smith et al., Phys. Rev. Lett. 116, 061102 (2016), doi:..."
+    const r = ref({ title: "Phys. Rev. Lett.", authors: au("Benjamin Abbott"), year: 2016, venue: null, doi: "10.1103/physrevlett.116.061102" });
+    const hit = cand({ sourceId: "10.1103/physrevlett.116.061102", doi: "10.1103/physrevlett.116.061102", title: "Observation of Gravitational Waves from a Binary Black Hole Merger", authors: au("B. P. Abbott"), year: 2016, venue: "Physical Review Letters", lookup: "doi" });
+    expect(scholarlyScorer.score(r, [hit], ctx({ "doi.registered": true })).verdict).toBe("VERIFIED");
+  });
+
+  it("says AMBIGUOUS (degraded), not NOT_FOUND, when a lookup that could have found the work failed", () => {
+    const res = scholarlyScorer.score(ref(), [], ctx({}, ["semantic-scholar"]));
+    expect(res.verdict).toBe("AMBIGUOUS");
+    expect(res.reason).toMatch(/semantic-scholar/);
+  });
+});
+
+describe("scholarlyScorer: other review regressions", () => {
+  it("normalizes non-Latin titles instead of erasing them", () => {
+    expect(normalizeTitle("Глубокое обучение")).toBe("глубокое обучение");
+    expect(normalizeTitle("深度学习的综述")).toBe("深度学习的综述");
+    expect(normalizeTitle("β-VAE: Learning basic visual concepts")).toBe("β vae learning basic visual concepts");
+    expect(titleSimilarity("深度学习的综述", "深度学习的综述")).toBe(1);
+  });
+
+  it("ignores group authors (collaborations, teams) in the author check", () => {
+    const res = score(ref({ authors: [{ name: "ATLAS Collaboration", surname: "Collaboration" }] }), [cand(), s2()]);
+    expect(res.mismatches).not.toContain("authors");
+  });
+
+  it("matches a loose title when the DOI matches (sameWorkWithId)", () => {
+    const res = score(ref({ title: "Deep residual learning (ResNet) for recognition of images", doi: "10.1109/cvpr.2016.90" }), [cand({ lookup: "doi" }), s2()]);
+    expect(res.verdict).toBe("VERIFIED");
+  });
+
+  it("flags a year two off as MISMATCH(year)", () => {
+    expect(score(ref({ year: 2014 }), [cand(), s2()]).mismatches).toEqual(["year"]);
   });
 });
