@@ -4,16 +4,13 @@
   "private": true,
   "type": "module",
   "description": "Citation checker for research papers: existence + relevance verification.",
-  "bin": {
-    "citecheck": "./bin/citecheck.mjs"
-  },
   "scripts": {
     "citecheck": "tsx src/cli.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx src/infra/db/migrate.ts",
-    "eval": "tsx eval/run.ts"
+    "db:migrate": "tsx src/cli.ts migrate",
+    "fixtures": "tsx scripts/fixtures.ts"
   },
   "packageManager": "pnpm@12.23.0",
   "engines": {
