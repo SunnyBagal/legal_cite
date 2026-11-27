@@ -7,7 +7,20 @@ import { config, userAgent } from "../config.js";
 
 export type Source = { kind: "arxiv"; id: string } | { kind: "pdf"; path: string };
 
-const NEW_ARXIV = /^\d{4}\.\d{4,5}(v\d+)?$/;
+const NEW_ARXIV = /^(\d{2})(\d{2})\.(\d{4,5})(v\d+)?$/;
+
+/**
+ * New-style arXiv ids are YYMM.NNNN from 0704 to 1412 and YYMM.NNNNN from 1501 on. arXiv
+ * answers some malformed ids with an unrelated paper (2303.0877 served one), so be strict.
+ */
+function isNewStyleArxivId(id: string): boolean {
+  const m = NEW_ARXIV.exec(id);
+  if (!m) return false;
+  const yymm = Number(m[1]) * 100 + Number(m[2]);
+  const month = Number(m[2]);
+  if (month < 1 || month > 12 || yymm < 704) return false;
+  return m[3]!.length === (yymm >= 1501 ? 5 : 4);
+}
 const OLD_ARXIV = /^[a-z-]+(\.[A-Z]{2})?\/\d{7}(v\d+)?$/;
 
 /**
@@ -21,8 +34,15 @@ export function parseSource(input: string): Source {
     .replace(/^https?:\/\/(export\.)?arxiv\.org\/(abs|pdf)\//i, "")
     .replace(/^arxiv:/i, "")
     .replace(/\.pdf$/i, "");
-  if (NEW_ARXIV.test(id) || OLD_ARXIV.test(id)) return { kind: "arxiv", id };
+  if (isNewStyleArxivId(id) || OLD_ARXIV.test(id)) return { kind: "arxiv", id };
   return { kind: "pdf", path: resolve(input) };
+}
+
+/** Error for an input that is neither an existing file nor a valid arXiv id. */
+export function describeMissingInput(input: string): string {
+  return /^\d{4}\.\d+/.test(input.trim().replace(/^arxiv:/i, ""))
+    ? `${input} is not a valid arXiv id (YYMM.NNNNN since 2015, YYMM.NNNN before) and no such file exists`
+    : `no such file: ${input}`;
 }
 
 const PDF_DIR = join(config.cacheDir, "pdfs");

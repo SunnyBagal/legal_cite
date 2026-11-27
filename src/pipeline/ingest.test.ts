@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { UnrecoverableError } from "bullmq";
 import { describe, expect, it } from "vitest";
-import { ingest, parseSource } from "./ingest.js";
+import { describeMissingInput, ingest, parseSource } from "./ingest.js";
 
 describe("parseSource", () => {
   it.each([
@@ -34,5 +34,23 @@ describe("ingest", () => {
 
   it("rejects a missing file without retrying", async () => {
     await expect(ingest({ kind: "pdf", path: join(tmp(), "nope.pdf") })).rejects.toBeInstanceOf(UnrecoverableError);
+  });
+});
+
+// Regression: ISSUE-001 — a malformed arXiv id ran as an unrelated paper
+// Found by /qa on 2026-11-28
+// Report: .gstack/qa-reports/qa-report-citecheck-cli-2026-11-28.md
+describe("parseSource: arXiv id validity", () => {
+  it.each(["2303.0877", "1501.0001", "2313.08774", "0703.0001", "1412.12345"])("rejects %s (wrong digit count for its date, or bad month)", (id) => {
+    expect(parseSource(id).kind).toBe("pdf");
+  });
+
+  it.each(["0704.0001", "1412.9999", "1501.00001", "2303.08774v2"])("accepts %s", (id) => {
+    expect(parseSource(id).kind).toBe("arxiv");
+  });
+
+  it("explains a malformed arXiv-looking input instead of only saying 'no such file'", () => {
+    expect(describeMissingInput("2303.0877")).toMatch(/not a valid arXiv id/);
+    expect(describeMissingInput("./paper.pdf")).toBe("no such file: ./paper.pdf");
   });
 });

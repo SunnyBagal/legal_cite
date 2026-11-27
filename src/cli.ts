@@ -12,7 +12,7 @@ import { jsonReporter } from "./report/json.js";
 import { createDb } from "./infra/db/client.js";
 import { createQueuedGateway } from "./infra/http/gateway.js";
 import { runMigrations } from "./infra/db/migrate.js";
-import { parseSource } from "./pipeline/ingest.js";
+import { describeMissingInput, parseSource } from "./pipeline/ingest.js";
 import { createQueues, redisConnection } from "./pipeline/queues.js";
 import { createPaper, getPaperStatus, relevanceSummary, setPaperStatus, verdictCounts } from "./pipeline/store.js";
 import { localEmbedder } from "./relevance/embedder.js";
@@ -34,7 +34,7 @@ program
   .description("Run the full pipeline on one paper and wait for the result")
   .action(async (input: string, opts: { timeout: string; relevance: boolean; llm?: string; out: string }) => {
     const source = parseSource(input);
-    if (source.kind === "pdf" && !existsSync(source.path)) throw new Error(`no such file: ${input}`);
+    if (source.kind === "pdf" && !existsSync(source.path)) throw new Error(describeMissingInput(input));
     if (opts.llm && opts.llm !== "anthropic" && opts.llm !== "openai") throw new Error(`--llm must be anthropic or openai, got ${opts.llm}`);
     const llm = opts.relevance ? selectLLM(opts.llm as LLMChoice | undefined) : null;
     if (opts.relevance && !llm) {
