@@ -39,7 +39,8 @@ export const papers = pgTable(
     tei: text("tei"),
     status: text("status").$type<PaperStatus>().notNull().default("queued"),
     error: text("error"),
-    options: jsonb("options").$type<{ relevance: boolean }>().notNull(),
+    /** `llm` = provider name the run judged relevance with (absent when relevance is off). */
+    options: jsonb("options").$type<{ relevance: boolean; llm?: string }>().notNull(),
     createdAt: createdAt(),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
   },
@@ -171,6 +172,11 @@ export const relevanceVerdicts = pgTable(
     model: text("model"),
     /** The cited text the verdict was based on (title + abstract). */
     citedText: text("cited_text"),
+    /** Which record supplied the abstract ("source:sourceId"). */
+    abstractSource: text("abstract_source"),
+    /** Every relevance verdict is abstract-level; the label travels with the data. */
+    scope: text("scope").notNull().default("abstract-level, needs human review"),
+    verifierVersion: text("verifier_version"),
     createdAt: createdAt(),
   },
   (t) => [
