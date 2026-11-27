@@ -266,3 +266,15 @@ describe("parseTei: regressions found in review (gpt4 fixture)", () => {
     expect(gpt4.contexts.filter((c) => c.marker === "[89][90]")).toHaveLength(2);
   });
 });
+
+describe("parseTei: publisher glued onto a book title (synthetic)", () => {
+  it.each([
+    ["Superintelligence: Paths, Dangers, Strategies. University Press", "Superintelligence: Paths, Dangers, Strategies"],
+    ["What We Owe The Future. Basic Books", "What We Owe The Future"],
+    ["Zen and the Art of the Internet. Project Gutenberg", "Zen and the Art of the Internet"],
+    ["Dr. Strangelove and the bomb", "Dr. Strangelove and the bomb"],
+  ])("%s → %s", (raw, expected) => {
+    const bibls = `<biblStruct xml:id="b0"><monogr><title level="m">${raw}</title></monogr></biblStruct>`;
+    expect(parseTei(teiDoc({ body: "", keys: [], bibls })).references[0]?.title).toBe(expected);
+  });
+});

@@ -253,7 +253,7 @@ function parseBiblStruct(b: Element): Reference {
   // Otherwise <monogr> is the work itself (book, report, preprint) -- including when GROBID
   // emits an empty <analytic><title/> and files the real title under <monogr>.
   const analyticTitle = titleOf(analytic);
-  const title = analyticTitle ?? titleOf(monogr) ?? titleFromReportType(b);
+  const title = stripPublisher(analyticTitle ?? titleOf(monogr) ?? titleFromReportType(b));
   const venue = analyticTitle && monogr ? (titleOf(monogr) ?? clean(text(first(monogr, "meeting")))) : null;
 
   return {
@@ -291,6 +291,14 @@ export function findArxivId(texts: string[]): string | null {
     if (m?.[1]) return m[1];
   }
   return null;
+}
+
+/** GROBID sometimes glues the publisher onto a book title: "What We Owe The Future. Basic Books". */
+function stripPublisher(title: string | null): string | null {
+  if (!title) return null;
+  const m = /^(.{8,}?)\.\s+((?:[A-Z][\w&'-]*\s*){1,4})$/.exec(title);
+  const tail = m?.[2] ?? "";
+  return m && /\b(press|books|publishing|publishers|gutenberg|university|wiley|springer|elsevier)\b/i.test(tail) ? m[1]!.trim() : title;
 }
 
 /** GROBID sometimes leaves <title/> empty and files "Title. arXiv preprint" under report_type. */
