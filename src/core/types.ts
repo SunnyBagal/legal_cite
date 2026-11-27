@@ -202,10 +202,14 @@ export interface RelevanceVerifier {
 export interface LLMProvider {
   readonly name: string;
   readonly model: string;
-  completeJSON<T>(req: { system: string; user: string; schema: z.ZodType<T>; schemaName: string }): Promise<T>;
+  /** `model` is the model that actually answered (it differs after a refusal fallback). */
+  completeJSON<T>(req: { system: string; user: string; schema: z.ZodType<T>; schemaName: string }): Promise<{ output: T; model: string }>;
 }
 
+/** The model declined to answer. */
 export class LLMRefusalError extends Error {}
+/** The answer was cut off (output limit) or otherwise incomplete. */
+export class LLMIncompleteError extends Error {}
 
 /** Fetches a cited work's abstract/summary text, given its matched record. */
 export interface AbstractFetcher {
@@ -226,4 +230,6 @@ export interface CitationDomain {
   resolvers: Resolver[];
   scorer: ExistenceScorer;
   abstracts: AbstractFetcher;
+  /** Is a stored candidate (by its score breakdown) a record of the cited work itself? */
+  sameWork(breakdown: ScoreBreakdown): boolean;
 }
