@@ -168,3 +168,65 @@ migration, simplification), the Claude adversarial pass and a red team.
   - Skipped simplification advice: FlowProducer, the store helpers and the verdict arrays
     are used from M2 to M5. The hand-rolled Redis URL parse is kept and now handles
     `rediss://` and usernames.
+
+## Existence resolution (M2)
+
+**An LLM never decides existence.** Verdicts come from lookups plus the deterministic
+scorer in `src/domains/scholarly/scoring.ts`, whose thresholds are named in `THRESHOLDS`.
+
+- **Gateway.** Every API call goes through `ApiGateway`
+  (`src/infra/http/gateway.ts`):
+  - **Cache:** Redis, 30-day TTL, keyed by sha256(api + URL). 404s are cached as
+    negative results.
+  - **Rate limits:** one BullMQ queue per API, with `{max, duration, concurrency}` taken
+    from docs/apis.md. Crossref's single-record and list pools get separate queues.
+  - **In-flight dedupe:** a job ID equal to the request hash means identical concurrent
+    requests share one HTTP call. Unlike paper IDs, request hashes survive DB resets.
+  - **Credentials:** `mailto` and API keys are added at fetch time, so they never appear
+    in cache keys, in `resolver_calls.raw` or in logs.
+  - **Errors:** 429 and 5xx retry 5 times with exponential backoff. Other 4xx, and
+    OpenAlex's `daily_budget` 429, fail permanently.
+- **Tiers.** `Resolver.tier` lets the pipeline run lookups cheapest first and stop as soon
+  as the scorer says VERIFIED:
+  1. Crossref DOI and arXiv `id_list`.
+  2. Crossref `query.bibliographic` and S2 `search/match`.
+  3. OpenAlex `search.title` (charged against the keyless budget of 100 searches/day) and
+     arXiv `ti:` search (one request every 3 s).
+
+  On 1706.03762, 22 of 40 references were settled in tier 1 and only 1 reached tier 3.
+  Search text is the normalized title, because punctuation broke OpenAlex's filter
+  syntax.
+- **Degraded lookups.** If every applicable lookup errored, the verdict is AMBIGUOUS
+  with `degraded = true`, never NOT_FOUND. An outage must not look like a fabricated
+  citation.
+- **Same work.** A candidate counts as the same work when any of these holds:
+  - Title similarity is at least 0.90 (the better of edit similarity and sorted-token
+    edit similarity, after normalization).
+  - Title similarity is at least 0.60 and the DOI or arXiv ID matches.
+  - The record's title is the cited title plus a subtitle (4+ words) and the authors
+    agree. On 1706.03762, a word-count rule alone broke b26 or let 2303.08774 b176
+    through.
+- **Field checks** (`authors` ≥ 50% surname overlap, `year` ±1, `venue`, `doi`,
+  `arxivId`). A field fails only if no record of the same work agrees, and unknown values
+  never fail:
+  - **Different sources record different years:** Crossref publishes print, online and
+    issued years, and all are accepted. arXiv's latest-revision year is accepted too,
+    since citing vN is legitimate.
+  - **Venues** compare through canonical acronyms (NeurIPS = NIPS = "Neural Information
+    Processing Systems") or content-token overlap. Preprint servers count as unknown.
+  - **Surname matching** checks every name token of the record's authors, which absorbs
+    GROBID's name splitting ("Jimmy Lei Ba" becomes surname "Lei Ba").
+- **A MISMATCH needs two independent sources.** On 2303.08774, five of six first-run
+  MISMATCHes were single-record artefacts: an S2 record dated 2026, a book review sharing
+  the book's title, and online-first versus print years. With one source the verdict is
+  AMBIGUOUS, and the disputed field is still listed.
+- **Book reviews.** When a record is titled "<cited title> by <cited author>", the
+  other same-title records are probably reviews, so the verdict is AMBIGUOUS, not
+  MISMATCH(authors).
+- **Generic short titles** (3 words or fewer) with no author agreement are AMBIGUOUS.
+- **Web pages.** A NOT_FOUND whose citation is just a URL (no DOI or arXiv ID) says the
+  scholarly indexes don't cover web pages. On 2303.08774 that's 30 of 48 NOT_FOUND:
+  OpenAI blog posts, SAT and AP score pages, NATO pages.
+- **Contact email.** `CONTACT_EMAIL` is empty by default. I didn't put your address
+  into requests to external APIs without your approval, so Crossref runs on its public
+  pool (5 and 1 requests/s). Set the email in `.env` to get the polite pool.
