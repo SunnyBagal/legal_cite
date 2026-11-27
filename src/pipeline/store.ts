@@ -1,4 +1,4 @@
-import { and, asc, count, eq, inArray, ne } from "drizzle-orm";
+import { and, asc, count, eq, inArray, notInArray } from "drizzle-orm";
 import type { ExtractedDocument, Reference } from "../core/types.js";
 import type { Db } from "../infra/db/client.js";
 import {
@@ -41,8 +41,9 @@ export async function getPaperStatus(db: Db, paperId: number) {
 }
 
 /**
- * Move a paper to `status`. Never moves a paper out of "failed" (a stale or duplicate
- * job must not resurrect it); "failed" itself always wins so errors are never lost.
+ * Move a paper to `status`. Never moves a paper out of a terminal state ("failed",
+ * "reported"): a stale or duplicate job must not resurrect or rewind it. "failed" itself
+ * always wins so errors are never lost.
  */
 export async function setPaperStatus(
   db: Db,
@@ -54,7 +55,7 @@ export async function setPaperStatus(
   await db
     .update(papers)
     .set({ status, error: null, ...extra, finishedAt: terminal ? new Date() : null })
-    .where(status === "failed" ? eq(papers.id, paperId) : and(eq(papers.id, paperId), ne(papers.status, "failed")));
+    .where(status === "failed" ? eq(papers.id, paperId) : and(eq(papers.id, paperId), notInArray(papers.status, ["failed", "reported"])));
 }
 
 /**
@@ -141,16 +142,17 @@ export async function getContexts(db: Db, bibEntryIds: number[]) {
     .orderBy(asc(citationContexts.ordinal));
 }
 
-export async function getBibEntryIds(db: Db, paperId: number): Promise<number[]> {
-  const rows = await db.select({ id: bibEntries.id }).from(bibEntries).where(eq(bibEntries.paperId, paperId)).orderBy(asc(bibEntries.id));
-  return rows.map((r) => r.id);
-}
-
 /**
  * Persist one reference's resolution atomically: raw resolver calls, every scored candidate
  * (with its breakdown) and the verdict. Idempotent: a retried job replaces the previous one.
  */
-export async function saveResolution(db: Db, bibEntryId: number, r: Resolution): Promise<void> {
+/** Postgres rejects U+0000 in text and jsonb; third-party API data occasionally contains it. */
+function stripNul<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value, (_k, v: unknown) => (typeof v === "string" ? v.replaceAll("\u0000", "") : v))) as T;
+}
+
+export async function saveResolution(db: Db, bibEntryId: number, resolution: Resolution): Promise<void> {
+  const r = stripNul(resolution);
   await db.transaction(async (tx) => {
     await tx.delete(existenceVerdicts).where(eq(existenceVerdicts.bibEntryId, bibEntryId));
     await tx.delete(resolutionCandidates).where(eq(resolutionCandidates.bibEntryId, bibEntryId));
