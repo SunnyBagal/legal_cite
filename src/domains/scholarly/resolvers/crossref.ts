@@ -4,19 +4,25 @@ import { normDoi } from "../scoring.js";
 import { arxivIdFromDoi, searchText, stripMarkup } from "./common.js";
 
 const BASE = "https://api.crossref.org";
-const SELECT = "DOI,title,author,issued,container-title,abstract,type";
+const SELECT = "DOI,title,author,issued,published-print,published-online,container-title,abstract,type";
 
 export interface CrossrefWork {
   DOI: string;
   title?: string[];
   author?: { given?: string; family?: string; name?: string }[];
-  issued?: { "date-parts"?: (number | null)[][] };
+  issued?: DateParts;
+  "published-print"?: DateParts;
+  "published-online"?: DateParts;
   "container-title"?: string[];
   abstract?: string;
 }
 
+type DateParts = { "date-parts"?: (number | null)[][] };
+const yearOf = (d: DateParts | undefined) => d?.["date-parts"]?.[0]?.[0] ?? null;
+
 export function crossrefToCandidate(w: CrossrefWork): CandidateRecord {
   const doi = normDoi(w.DOI);
+  const altYears = [yearOf(w["published-print"]), yearOf(w["published-online"])].filter((y): y is number => y !== null);
   return {
     source: "crossref",
     sourceId: doi ?? w.DOI,
@@ -25,7 +31,8 @@ export function crossrefToCandidate(w: CrossrefWork): CandidateRecord {
       const surname = a.family ?? a.name ?? "";
       return { name: [a.given, surname].filter(Boolean).join(" "), surname };
     }),
-    year: w.issued?.["date-parts"]?.[0]?.[0] ?? null,
+    year: yearOf(w.issued),
+    ...(altYears.length > 0 ? { altYears } : {}),
     venue: w["container-title"]?.[0] ?? null,
     doi,
     arxivId: arxivIdFromDoi(doi),

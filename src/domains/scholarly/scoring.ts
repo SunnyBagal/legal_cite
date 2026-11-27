@@ -30,7 +30,7 @@ export function normalizeTitle(title: string): string {
 /**
  * Similarity of two titles in [0, 1]: the best of character-level edit similarity,
  * the same on sorted tokens (word order changes), and a main-title/subtitle prefix rule
- * that only applies when the shorter title has at least 4 words.
+ * that only applies when the shorter title has at least 5 words.
  */
 export function titleSimilarity(a: string, b: string): number {
   const na = normalizeTitle(a);
@@ -39,7 +39,7 @@ export function titleSimilarity(a: string, b: string): number {
   if (na === nb) return 1;
   const sorted = (s: string) => s.split(" ").sort().join(" ");
   const [short, long] = na.length <= nb.length ? [na, nb] : [nb, na];
-  const prefix = short.split(" ").length >= 4 && long.startsWith(`${short} `) ? 0.92 : 0;
+  const prefix = short.split(" ").length >= 5 && long.startsWith(`${short} `) ? 0.92 : 0;
   return Math.max(editSimilarity(na, nb), editSimilarity(sorted(na), sorted(nb)), prefix);
 }
 
@@ -103,6 +103,18 @@ function score(ref: Reference, candidates: CandidateRecord[]): ExistenceResult {
     return { verdict: "AMBIGUOUS", match, mismatches, scored, reason: `The title "${ref.title}" is generic and no record with it has matching authors.` };
   }
   const where = `${match.candidate.source} (${match.candidate.sourceId})`;
+  // One database record can be wrong (an S2 record dated 2026) or be a different item with
+  // the same title (a book review). A MISMATCH needs two independent sources to agree.
+  const sources = new Set(same.map((s) => s.candidate.source));
+  if (mismatches.length > 0 && sources.size < 2) {
+    return {
+      verdict: "AMBIGUOUS",
+      match,
+      mismatches,
+      scored,
+      reason: `Only one source (${where}) has this work, and it disagrees on: ${mismatches.join(", ")}. Needs corroboration.`,
+    };
+  }
   return mismatches.length === 0
     ? { verdict: "VERIFIED", match, mismatches, scored, reason: `Matched ${where}.` }
     : { verdict: "MISMATCH", match, mismatches, scored, reason: `Found in ${where}, but these fields disagree: ${mismatches.join(", ")}.` };
@@ -123,11 +135,14 @@ function notFound(ref: Reference, scored: ScoredCandidate[]): ExistenceResult {
     };
   }
   const doiTarget = ref.doi ? scored.find((s) => s.candidate.doi === normDoi(ref.doi)) : undefined;
+  const webPage = !ref.doi && !ref.arxivId && /https?:\/\/|www\./i.test(ref.raw ?? "");
   const reason = doiTarget
     ? `The cited DOI resolves to a different work ("${doiTarget.candidate.title}") and the cited title was not found.`
-    : scored.length === 0
-      ? "No source returned any candidate."
-      : `No record matches the cited ${ref.title ? "title" : "identifier"}.`;
+    : webPage
+      ? "Not in Crossref, Semantic Scholar, OpenAlex or arXiv. The citation points to a web page, which these indexes don't cover; check the URL by hand."
+      : scored.length === 0
+        ? "No source returned any candidate."
+        : `No record matches the cited ${ref.title ? "title" : "identifier"}.`;
   return { verdict: "NOT_FOUND", match: null, mismatches: [], scored, reason };
 }
 
@@ -151,7 +166,8 @@ function fieldMismatches(ref: Reference, same: ScoredCandidate[]): MismatchField
 function breakdown(ref: Reference, c: CandidateRecord): ScoreBreakdown {
   const titleSim = ref.title && c.title ? titleSimilarity(ref.title, c.title) : 0;
   const authorOverlap = surnameOverlap(ref.authors, c.authors);
-  const yearDelta = ref.year && c.year ? Math.abs(ref.year - c.year) : null;
+  const years = [c.year, ...(c.altYears ?? [])].filter((y): y is number => typeof y === "number");
+  const yearDelta = ref.year && years.length > 0 ? Math.min(...years.map((y) => Math.abs(ref.year! - y))) : null;
   const venueMatch = venuesMatch(ref.venue, c.venue);
   const identifierMatch = idMatch(ref, c);
   const part = (v: number | null, f: (x: number) => number) => (v === null ? 0.5 : f(v));

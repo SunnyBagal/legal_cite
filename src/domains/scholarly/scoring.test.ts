@@ -71,6 +71,8 @@ const cand = (o: Partial<CandidateRecord> = {}): CandidateRecord => ({
   ...o,
 });
 const score = (r: Reference, cs: CandidateRecord[]) => scholarlyScorer.score(r, cs);
+/** The same record as seen by a second, independent source (MISMATCH needs corroboration). */
+const s2 = (o: Partial<CandidateRecord> = {}) => cand({ source: "semantic-scholar", sourceId: "2c03df8b", venue: "Computer Vision and Pattern Recognition", ...o });
 
 describe("scholarlyScorer: verdicts", () => {
   it("VERIFIED when title, authors, year and venue agree", () => {
@@ -96,7 +98,7 @@ describe("scholarlyScorer: verdicts", () => {
   });
 
   it("MISMATCH(authors) for a real title with swapped authors", () => {
-    const res = score(ref({ authors: au("Yann LeCun", "Geoffrey Hinton") }), [cand()]);
+    const res = score(ref({ authors: au("Yann LeCun", "Geoffrey Hinton") }), [cand(), s2()]);
     expect(res.verdict).toBe("MISMATCH");
     expect(res.mismatches).toEqual(["authors"]);
   });
@@ -109,7 +111,7 @@ describe("scholarlyScorer: verdicts", () => {
 
   it("accepts a year off by one but flags MISMATCH(year) beyond that", () => {
     expect(score(ref({ year: 2015 }), [cand()]).verdict).toBe("VERIFIED");
-    const res = score(ref({ year: 2019 }), [cand()]);
+    const res = score(ref({ year: 2019 }), [cand(), s2()]);
     expect(res.verdict).toBe("MISMATCH");
     expect(res.mismatches).toEqual(["year"]);
   });
@@ -121,7 +123,7 @@ describe("scholarlyScorer: verdicts", () => {
   });
 
   it("MISMATCH(doi) for a real title with a fabricated DOI", () => {
-    const res = score(ref({ doi: "10.9999/fake.2016.123" }), [cand()]);
+    const res = score(ref({ doi: "10.9999/fake.2016.123" }), [cand(), s2()]);
     expect(res.verdict).toBe("MISMATCH");
     expect(res.mismatches).toEqual(["doi"]);
   });
@@ -138,8 +140,30 @@ describe("scholarlyScorer: verdicts", () => {
     const r = ref({ ...neurips, venue: "NeurIPS" });
     expect(score(r, [cand({ ...neurips, venue: "Advances in Neural Information Processing Systems 30" })]).verdict).toBe("VERIFIED");
     expect(score(r, [cand({ ...neurips, venue: "arXiv (Cornell University)" })]).verdict).toBe("VERIFIED");
-    const wrong = score(ref({ ...neurips, venue: "International Conference on Machine Learning" }), [cand({ ...neurips, venue: "Advances in Neural Information Processing Systems" })]);
+    const wrong = score(ref({ ...neurips, venue: "International Conference on Machine Learning" }), [
+      cand({ ...neurips, venue: "Advances in Neural Information Processing Systems" }),
+      s2({ ...neurips, venue: "Neural Information Processing Systems" }),
+    ]);
     expect(wrong.mismatches).toEqual(["venue"]);
+  });
+
+  it("AMBIGUOUS, not MISMATCH, when only one source has the work and it disagrees", () => {
+    // 2303.08774: a book review titled "Superintelligence" in Crossref; an S2 record dated 2026.
+    const res = score(ref({ authors: au("Nick Bostrom") }), [cand()]);
+    expect(res.verdict).toBe("AMBIGUOUS");
+    expect(res.mismatches).toEqual(["authors"]);
+    expect(res.reason).toMatch(/only one source/i);
+  });
+
+  it("accepts any of Crossref's publication years (online-first vs. print issue)", () => {
+    // 2303.08774 b135: issued 2020 (online), print issue 2022, cited 2022.
+    expect(score(ref({ year: 2022 }), [cand({ year: 2020, altYears: [2020, 2022] }), s2({ year: 2020 })]).verdict).toBe("VERIFIED");
+  });
+
+  it("explains a NOT_FOUND web page instead of implying it was fabricated", () => {
+    const res = score(ref({ title: "Introducing the new Bing", authors: [], raw: '"Introducing the new Bing." https://www.bing.com/new.' }), []);
+    expect(res.verdict).toBe("NOT_FOUND");
+    expect(res.reason).toMatch(/web page/i);
   });
 
   it("AMBIGUOUS, not MISMATCH, for a short generic title with no author agreement", () => {
@@ -160,5 +184,12 @@ describe("scholarlyScorer: verdicts", () => {
     const res = score(ref(), [cand({ title: "Something else entirely", doi: "10.1/x", sourceId: "10.1/x" }), cand()]);
     expect(res.scored.map((s) => s.candidate.doi)).toEqual(["10.1109/cvpr.2016.90", "10.1/x"]);
     expect(res.scored[0]?.breakdown).toMatchObject({ titleSimilarity: 1, authorOverlap: 1, yearDelta: 0, venueMatch: true });
+  });
+});
+
+describe("titleSimilarity: subtitle rule needs 5+ words", () => {
+  it("does not treat a 4-word title as the main title of a longer one", () => {
+    // 2303.08774 b176: "AI and Job Quality" (Partnership on AI report) vs an SSRN paper.
+    expect(titleSimilarity("AI and Job Quality", "AI and Job Quality: Insights from Frontline Workers")).toBeLessThan(0.9);
   });
 });

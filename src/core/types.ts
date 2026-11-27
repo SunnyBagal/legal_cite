@@ -76,6 +76,8 @@ export interface CandidateRecord {
   title: string | null;
   authors: Author[];
   year: number | null;
+  /** Other years the source gives for the same record (e.g. Crossref online vs. print). */
+  altYears?: number[];
   venue: string | null;
   doi: string | null;
   arxivId: string | null;
