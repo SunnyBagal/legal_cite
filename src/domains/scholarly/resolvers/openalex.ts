@@ -1,6 +1,6 @@
 import type { CandidateRecord, Reference, Resolver, ResolverResult } from "../../../core/types.js";
 import { fetchJson, type ApiGateway } from "../../../infra/http/gateway.js";
-import { normDoi } from "../scoring.js";
+import { isWebPage, normDoi } from "../scoring.js";
 import { arxivIdFromUrl, authorFromName, searchText } from "./common.js";
 
 const BASE = "https://api.openalex.org";
@@ -50,7 +50,8 @@ export function openalexSearchResolver(gw: ApiGateway): Resolver {
   return {
     name: "openalex",
     tier: 3,
-    applies: (ref) => Boolean(ref.title),
+    // Web pages are never in OpenAlex; don't spend the 100/day keyless search budget on them.
+    applies: (ref) => Boolean(ref.title) && !isWebPage(ref),
     async resolve(ref: Reference): Promise<ResolverResult> {
       const url = `${BASE}/works?search.title=${encodeURIComponent(searchText(ref.title!))}&per_page=5&select=${OPENALEX_SELECT}`;
       const raw = await fetchJson<{ results: OpenAlexWork[] }>(gw, "openalex", url);

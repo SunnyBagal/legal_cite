@@ -48,20 +48,28 @@ export function crossrefDoiResolver(gw: ApiGateway): Resolver {
     tier: 1,
     applies: (ref) => Boolean(ref.doi),
     async resolve(ref: Reference): Promise<ResolverResult> {
-      const raw = await fetchJson<{ message: CrossrefWork }>(gw, "crossref-doi", `${BASE}/works/${encodeURIComponent(normDoi(ref.doi)!)}`);
-      return { candidates: raw ? [crossrefToCandidate(raw.message)] : [], raw };
+      const doi = normDoi(ref.doi);
+      if (!doi) return { candidates: [], raw: null };
+      const raw = await fetchJson<{ message: CrossrefWork }>(gw, "crossref-doi", `${BASE}/works/${encodeURIComponent(doi)}`);
+      return { candidates: raw ? [{ ...crossrefToCandidate(raw.message), lookup: "doi" as const }] : [], raw };
     },
   };
 }
 
-/** Tier 2: bibliographic query (title + first surname + year), top 5. */
+/**
+ * Tier 2: bibliographic query, top 5. Sends the raw reference string when available (what
+ * query.bibliographic is designed for; it also covers references whose title GROBID lost),
+ * else title + first surname + year.
+ */
 export function crossrefQueryResolver(gw: ApiGateway): Resolver {
   return {
     name: "crossref-query",
     tier: 2,
-    applies: (ref) => Boolean(ref.title),
+    applies: (ref) => Boolean(ref.title || ref.raw),
     async resolve(ref: Reference): Promise<ResolverResult> {
-      const q = [searchText(ref.title!), ref.authors[0]?.surname, ref.year].filter(Boolean).join(" ");
+      const q = ref.raw
+        ? ref.raw.replace(/https?:\/\/\S+/g, " ").replace(/\s+/g, " ").trim().slice(0, 400)
+        : [searchText(ref.title!), ref.authors[0]?.surname, ref.year].filter(Boolean).join(" ");
       const url = `${BASE}/works?query.bibliographic=${encodeURIComponent(q)}&rows=5&select=${SELECT}`;
       const raw = await fetchJson<{ message: { items: CrossrefWork[] } }>(gw, "crossref-query", url);
       return { candidates: (raw?.message.items ?? []).map(crossrefToCandidate), raw };

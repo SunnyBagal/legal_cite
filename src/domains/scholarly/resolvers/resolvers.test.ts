@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Reference } from "../../../core/types.js";
 import type { ApiGateway, ApiName, ApiResponse } from "../../../infra/http/gateway.js";
-import { arxivIdResolver, parseArxivFeed } from "./arxiv.js";
+import { arxivIdResolver, arxivIdUrl, parseArxivFeed, prefetchArxivIds } from "./arxiv.js";
+import { doiRegistryResolver } from "./doiRegistry.js";
 import { crossrefDoiResolver, crossrefQueryResolver, crossrefToCandidate } from "./crossref.js";
 import { abstractFromInvertedIndex, openalexToCandidate } from "./openalex.js";
 import { s2MatchResolver, s2ToCandidate } from "./semanticScholar.js";
@@ -11,13 +12,17 @@ import { s2MatchResolver, s2ToCandidate } from "./semanticScholar.js";
 /** Records requested URLs; answers from a table (default 404). */
 function fakeGateway(table: Record<string, ApiResponse> = {}) {
   const calls: [ApiName, string][] = [];
+  const primed = new Map<string, string>();
   const gw: ApiGateway = {
     async fetch(api, url) {
       calls.push([api, url]);
       return table[url] ?? { status: 404, body: "", cached: false };
     },
+    async prime(_api, url, res) {
+      primed.set(url, res.body);
+    },
   };
-  return { gw, calls };
+  return { gw, calls, primed };
 }
 
 const REF: Reference = {
@@ -147,5 +152,32 @@ describe("arxiv: latest revision year", () => {
        <title>Optimal Policies Tend to Seek Power</title></entry></feed>`,
     );
     expect(c).toMatchObject({ year: 2019, altYears: [2023] });
+  });
+});
+
+describe("arxiv: batched prefetch", () => {
+  it("fetches ids in one id_list request and primes each single-id URL", async () => {
+    const entry = (id: string) => `<entry><id>http://arxiv.org/abs/${id}v2</id><published>2017-06-12T00:00:00Z</published><title>T ${id}</title></entry>`;
+    const batchUrl = "https://export.arxiv.org/api/query?id_list=1706.03762,1512.03385&max_results=2";
+    const body = `<feed xmlns="http://www.w3.org/2005/Atom">${entry("1706.03762")}${entry("1512.03385")}</feed>`;
+    const { gw, calls, primed } = fakeGateway({ [batchUrl]: { status: 200, body, cached: false } });
+    await prefetchArxivIds(gw, ["1706.03762", "1512.03385", "1706.03762"]);
+    expect(calls).toEqual([["arxiv", batchUrl]]);
+    expect(parseArxivFeed(primed.get(arxivIdUrl("1512.03385"))!)[0]?.title).toBe("T 1512.03385");
+  });
+
+  it("reports an unknown id as a fact the scorer can use", async () => {
+    const { gw } = fakeGateway({ [arxivIdUrl("1512.03385")]: { status: 200, body: `<feed xmlns="http://www.w3.org/2005/Atom"></feed>`, cached: false } });
+    expect((await arxivIdResolver(gw).resolve(REF)).facts).toEqual({ "arxiv.exists": false });
+  });
+});
+
+describe("doi registry", () => {
+  it("reports whether the DOI is registered with any agency", async () => {
+    const url = "https://doi.org/api/handles/10.1109%2Fcvpr.2016.90";
+    const { gw } = fakeGateway({ [url]: { status: 200, body: '{"responseCode":1}', cached: false } });
+    expect((await doiRegistryResolver(gw).resolve(REF)).facts).toEqual({ "doi.registered": true });
+    const { gw: empty } = fakeGateway();
+    expect((await doiRegistryResolver(empty).resolve(REF)).facts).toEqual({ "doi.registered": false });
   });
 });
