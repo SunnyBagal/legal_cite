@@ -143,7 +143,7 @@ export const existenceVerdicts = pgTable(
       onDelete: "set null",
     }),
     reason: text("reason").notNull(),
-    /** True when every applicable resolver errored, so NOT_FOUND may be an outage. */
+    /** True when some lookup errored. The scorer then never answers NOT_FOUND (it says AMBIGUOUS). */
     degraded: boolean("degraded").notNull().default(false),
     createdAt: createdAt(),
   },
