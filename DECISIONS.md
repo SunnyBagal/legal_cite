@@ -305,3 +305,4 @@ same reason as in M1. The fixes are separate commits after the M2 feature commit
     MISMATCH(authors) when two sources hold the other work. That's indistinguishable
     from swapped authors without more signal; the eval measures it.
   - **Concurrent runs** still share queues. Documented as "run one at a time".
+- gstack telemetry prompt (M2 review): declined, telemetry set to off.
