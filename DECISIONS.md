@@ -306,3 +306,68 @@ same reason as in M1. The fixes are separate commits after the M2 feature commit
     from swapped authors without more signal; the eval measures it.
   - **Concurrent runs** still share queues. Documented as "run one at a time".
 - gstack telemetry prompt (M2 review): declined, telemetry set to off.
+
+## Relevance (M3)
+
+**Every relevance verdict is labelled "abstract-level, needs human review"** in the CLI
+output, and the label will appear in the reports too. The model sees only the cited work's
+title and abstract, never the full text.
+
+- **Scope.** Relevance runs only for VERIFIED or MISMATCH references, and only when the run
+  has it on (`papers.options.relevance`). `--no-relevance` makes the tool work with no LLM
+  key. Asking for relevance with no key fails at startup and names both fixes.
+- **Flow.** `report ← relevance(ref) ← resolve(ref)`, which is still one BullMQ queue per
+  stage. Verdicts are upserted per citing context, so retries are idempotent.
+- **Pre-filter.** Local `all-MiniLM-L6-v2` embeddings (transformers.js on CPU) mean no API
+  key and no per-call cost; the first run downloads about 23 MB of weights. A pair is called
+  UNRELATED without an LLM call only when two things hold:
+  - Cosine similarity is below **0.05**. At 0.1, 1706.03762's "label smoothing [36]" was
+    wrongly flagged: it cites Inception-v3, whose abstract never mentions label smoothing,
+    at a similarity of 0.099. A clearly unrelated pair scored 0.004.
+  - The passage has **at least 12 words**, excluding markers. "For more background, see
+    [94]." is dissimilar to everything, so there low similarity means "no content", not
+    "unrelated".
+
+  Both values are provisional until the eval harness (M5) measures them.
+- **LLM call.** One call per (context, cited title + abstract) pair, with strict JSON
+  `{verdict: SUPPORTS|PARTIAL|UNRELATED|CANNOT_TELL, reason}` via native structured outputs.
+  The system prompt tells the model to prefer PARTIAL or CANNOT_TELL over UNRELATED when the
+  topic matches, because the full paper may say more than its abstract.
+  - **Anthropic** (the default when its key is set): `claude-opus-5-5`, per the Claude API
+    skill's default, overridable with `ANTHROPIC_MODEL`.
+    - Uses `beta.messages.parse` with `betaZodOutputFormat`.
+    - `effort: "low"` suits a one-sentence classification. Opus 5.5 can't disable thinking,
+      so `max_tokens` is 4096 to leave room for it.
+    - `cache_control` is set on the shared system prompt. It only takes effect once the
+      prompt reaches the model's minimum cacheable prefix, which this short prompt may not.
+    - **Server-side refusal fallback is on** (`fallbacks: "default"`, beta
+      `server-side-fallback-2026-07-01`). A refusal from the whole chain becomes CANNOT_TELL.
+  - **OpenAI** (`--llm openai`): `gpt-5.5`, chosen from this account's live model list and
+    overridable with `OPENAI_MODEL`. It uses the Responses API `parse` with `zodTextFormat`
+    and `reasoning.effort: low`.
+  - Smoke test on the LSTM pair and a deliberately unrelated pair: both providers answered
+    SUPPORTS and UNRELATED correctly, in 2.4–5 s per call.
+- **Abstracts** come from the matched record. If it has none, the stage tries the other
+  same-title records of the work (arXiv and S2 records usually have one), going through the
+  domain's AbstractFetcher. On 1706.03762 this cut CANNOT_TELL ("no abstract") from 5 to 2.
+- **Keys.** Your keys were in `.env.example`, which git tracks and the repo is public. They
+  were never committed. I moved them to `.env` (gitignored, mode 600) and restored the
+  template.
+- **Results so far, Claude (relevance labels are abstract-level, needs human review):**
+
+  | Paper | Contexts | SUPPORTS | PARTIAL | CANNOT_TELL | UNRELATED | Time |
+  |---|---|---|---|---|---|---|
+  | 1706.03762 | 58 | 42 | 14 | 2 | 0 | 22 s |
+  | 2303.08774 | 145 | 79 | 50 | 14 | 2 | 58 s |
+
+  - **1706.03762 on OpenAI:** 41 SUPPORTS, 15 PARTIAL, 2 CANNOT_TELL.
+  - **2303.08774's two UNRELATED** are the remaining *linking* error: "[84,85]" sits in
+    appendix "H System Card", which GROBID emits after the system card starts. The relevance
+    stage rightly flags that the linked work doesn't fit.
+- **Relevance found linking errors upstream.** On 2303.08774, the first relevance run's
+  UNRELATED verdicts were all wrong *links*, not wrong citations:
+  - The system card's Abstract came before its numbering restart, so it linked to the
+    report's list.
+  - GROBID linked ambiguous numbers into the other document's list.
+
+  Both are fixed in `parseTei`, with regression tests.
