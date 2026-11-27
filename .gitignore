@@ -1,0 +1,8 @@
+node_modules/
+.env
+reports/
+.cache/
+*.log
+eval/out/
+test/fixtures/*.pdf
+test/fixtures/*.xml
