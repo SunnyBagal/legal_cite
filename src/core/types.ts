@@ -1,3 +1,5 @@
+import type { z } from "zod";
+
 /**
  * Domain-agnostic types and ports for the citation-verification engine.
  *
@@ -193,13 +195,17 @@ export interface RelevanceVerifier {
   verify(context: CitationContext, cited: CitedWorkText): Promise<RelevanceResult>;
 }
 
-/** Minimal LLM port: one prompt in, one JSON object out. */
+/**
+ * Minimal LLM port: one prompt in, one schema-validated object out (provider-native
+ * structured outputs). Throws LLMRefusalError when the model declines.
+ */
 export interface LLMProvider {
+  readonly name: string;
   readonly model: string;
-  completeJSON(req: { system: string; user: string; schema: JsonSchema }): Promise<unknown>;
+  completeJSON<T>(req: { system: string; user: string; schema: z.ZodType<T>; schemaName: string }): Promise<T>;
 }
 
-export type JsonSchema = Record<string, unknown>;
+export class LLMRefusalError extends Error {}
 
 /** Fetches a cited work's abstract/summary text, given its matched record. */
 export interface AbstractFetcher {
