@@ -1,8 +1,14 @@
 import { existsSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { Command } from "commander";
 import { config } from "./config.js";
 import { GrobidExtractor } from "./domains/scholarly/grobid.js";
 import { createScholarlyDomain } from "./domains/scholarly/index.js";
+import { arxivIdUrl, parseArxivFeed } from "./domains/scholarly/resolvers/arxiv.js";
+import { loadReport } from "./report/build.js";
+import { htmlReporter } from "./report/html.js";
+import { jsonReporter } from "./report/json.js";
 import { createDb } from "./infra/db/client.js";
 import { createQueuedGateway } from "./infra/http/gateway.js";
 import { runMigrations } from "./infra/db/migrate.js";
@@ -24,8 +30,9 @@ program
   .option("--timeout <minutes>", "give up after this many minutes", "30")
   .option("--no-relevance", "skip the relevance stage (works without any LLM key)")
   .option("--llm <provider>", "LLM for relevance: anthropic | openai (default: whichever key is set, Anthropic first)")
+  .option("--out <dir>", "write reports under this directory", "reports")
   .description("Run the full pipeline on one paper and wait for the result")
-  .action(async (input: string, opts: { timeout: string; relevance: boolean; llm?: string }) => {
+  .action(async (input: string, opts: { timeout: string; relevance: boolean; llm?: string; out: string }) => {
     const source = parseSource(input);
     if (source.kind === "pdf" && !existsSync(source.path)) throw new Error(`no such file: ${input}`);
     if (opts.llm && opts.llm !== "anthropic" && opts.llm !== "openai") throw new Error(`--llm must be anthropic or openai, got ${opts.llm}`);
@@ -53,6 +60,13 @@ program
         ? createRelevanceVerifier({ embedder, llm, prefilterThreshold: process.env.PREFILTER_THRESHOLD ? Number(process.env.PREFILTER_THRESHOLD) : null })
         : null,
       verifierProvider: llm?.name ?? null,
+      lookupTitle: async (s) => {
+        if (s.kind !== "arxiv") return null;
+        const res = await api.gateway.fetch("arxiv", arxivIdUrl(s.id.replace(/v\d+$/, "")));
+        return res.status === 200 ? (parseArxivFeed(res.body)[0]?.title ?? null) : null;
+      },
+      reportDir: resolve(opts.out),
+      reporters: [jsonReporter, htmlReporter],
     };
     const workers = startWorkers(deps, connection);
     let paperId: number | undefined;
@@ -86,6 +100,9 @@ program
                 `${rel.notJudgedByModel} not judged (no abstract, failure or budget); ${rel.unjudged} missing`,
             );
           }
+          const dir = join(resolve(opts.out), String(paperId));
+          console.log(`  report: ${join(dir, htmlReporter.filename)}`);
+          console.log(`          ${join(dir, jsonReporter.filename)}`);
           break;
         }
         if (Date.now() > deadline) stopReason ??= `timed out after ${opts.timeout} min`;
@@ -103,6 +120,24 @@ program
       await api.close(interrupted);
       await queues.close();
       await closeDb();
+    }
+  });
+
+program
+  .command("report")
+  .argument("<paper-id>", "id printed by `citecheck run` (paper #N)")
+  .option("--out <dir>", "write reports under this directory", "reports")
+  .description("Re-render the JSON and HTML reports for a finished run from the database")
+  .action(async (id: string, opts: { out: string }) => {
+    const { db, close } = createDb();
+    try {
+      const report = await loadReport(db, Number(id));
+      const dir = join(resolve(opts.out), String(report.paper.id));
+      await mkdir(dir, { recursive: true });
+      for (const r of [jsonReporter, htmlReporter]) await writeFile(join(dir, r.filename), r.render(report));
+      console.log(`report: ${join(dir, htmlReporter.filename)}`);
+    } finally {
+      await close();
     }
   });
 

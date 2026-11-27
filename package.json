@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Citation checker for research papers: existence + relevance verification.",
+  "bin": {
+    "citecheck": "./bin/citecheck.mjs"
+  },
   "scripts": {
     "citecheck": "tsx src/cli.ts",
     "test": "vitest run",
