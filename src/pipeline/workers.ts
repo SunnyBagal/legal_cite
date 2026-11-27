@@ -4,13 +4,16 @@ import type { CitationDomain, Extractor, RelevanceVerifier } from "../core/types
 import type { Db } from "../infra/db/client.js";
 import { ingest, pdfPath, type Source } from "./ingest.js";
 import { defaultJobOptions, STAGES, type Queues, type Stage, type StageJob } from "./queues.js";
+import { judgeReference } from "./relevance.js";
 import { resolveReference } from "./resolve.js";
 import {
   getBibEntry,
+  doneContextIds,
   getCandidateRecords,
   getContexts,
   getExistence,
   getPaper,
+  llmVerdictCount,
   saveExtraction,
   saveRelevance,
   saveResolution,
@@ -26,7 +29,12 @@ export interface PipelineDeps {
   domains: Map<string, CitationDomain>;
   /** Null when no LLM is configured; papers must then be run with relevance off. */
   verifier: RelevanceVerifier | null;
+  /** Provider name behind `verifier` ("anthropic" | "openai"). */
+  verifierProvider: string | null;
 }
+
+/** Spend cap: at most this many LLM relevance calls per paper (env MAX_LLM_CALLS_PER_PAPER). */
+const MAX_LLM_CALLS_PER_PAPER = Number(process.env.MAX_LLM_CALLS_PER_PAPER ?? 600);
 
 type Processor = (job: Job<StageJob>, deps: PipelineDeps) => Promise<unknown>;
 
@@ -111,42 +119,37 @@ const processors: Partial<Record<Stage, Processor>> = {
   },
 
   /**
-   * Relevance, only for references that exist (VERIFIED or MISMATCH) and only when the run
-   * asked for it: one verdict per citing context, from the matched record's abstract.
+   * Relevance for one reference (only existing works, only when the run asked for it).
+   * The judging itself is judgeReference; this wires it to the DB and BullMQ attempts.
    */
-  async relevance(job, { db, domains, verifier }) {
+  async relevance(job, { db, domains, verifier, verifierProvider }) {
     const paper = await activePaper(db, job.data.paperId);
     if (!paper || !paper.options.relevance) return { skipped: "relevance off" };
     if (!verifier) throw new UnrecoverableError("relevance requested but no LLM is configured");
-    const existence = await getExistence(db, job.data.bibEntryId!);
-    if (!existence?.record || (existence.verdict !== "VERIFIED" && existence.verdict !== "MISMATCH")) {
-      return { skipped: `existence ${existence?.verdict ?? "missing"}` };
+    // Leftover jobs from another run must be judged by the provider that run chose.
+    if (paper.options.llm && paper.options.llm !== verifierProvider) {
+      throw new UnrecoverableError(`paper ${paper.id} was run with --llm ${paper.options.llm}; this process uses ${verifierProvider}`);
     }
     const entry = await getBibEntry(db, job.data.bibEntryId!);
     const domain = domains.get(entry.kind);
+    if (!domain) throw new UnrecoverableError(`no citation domain registered for kind "${entry.kind}"`);
     const contexts = await getContexts(db, [entry.id]);
-    if (!domain || contexts.length === 0) return { skipped: "no citing contexts" };
-    const record = existence.record;
-    // The matched record may lack an abstract another record of the same work has (an arXiv
-    // or S2 record): try the matched one, then other same-title records, via the fetcher.
-    const sameWork = (await getCandidateRecords(db, entry.id))
-      .filter((c) => c.breakdown.titleSimilarity >= 0.9 && c.record.sourceId !== record.sourceId)
-      .map((c) => c.record);
-    let abstract: string | null = null;
-    for (const r of [record, ...sameWork]) {
-      abstract = await domain.abstracts.fetch(r);
-      if (abstract) break;
-    }
-    const title = record.title ?? entry.title ?? "";
-    const citedText = abstract ? `${title}\n\n${abstract}` : title;
-    for (const c of contexts) {
-      const result = await verifier.verify(
-        { referenceKey: entry.key, sentence: c.sentence, previousSentence: c.previousSentence, section: c.section, marker: c.marker, linkedBy: c.linkedBy as "grobid" | "numeric-fallback" },
-        { title, abstract },
-      );
-      await saveRelevance(db, c.id, result, citedText);
-    }
-    return { contexts: contexts.length };
+    return judgeReference(
+      {
+        existence: await getExistence(db, entry.id),
+        entryTitle: entry.title,
+        contexts,
+        candidates: await getCandidateRecords(db, entry.id),
+        doneContextIds: await doneContextIds(db, contexts.map((c) => c.id)),
+      },
+      {
+        domain,
+        verifier,
+        save: (id, result, citedText, source) => saveRelevance(db, id, result, citedText, source),
+        llmCallsLeft: async () => MAX_LLM_CALLS_PER_PAPER - (await llmVerdictCount(db, paper.id)),
+        finalAttempt: job.attemptsMade + 1 >= (job.opts.attempts ?? 1),
+      },
+    );
   },
 
   async report(job, { db }) {
@@ -180,7 +183,14 @@ export function startWorkers(deps: PipelineDeps, connection: ConnectionOptions) 
     // Without a listener, a Redis reconnect error would crash the process.
     worker.on("error", (err) => console.error(`[${stage}] worker error: ${err.message}`));
     worker.on("failed", async (job, err) => {
-      if (!job || !FATAL_STAGES.has(stage)) return;
+      if (!job) return;
+      if (!FATAL_STAGES.has(stage)) {
+        // Per-reference stages don't fail the paper, but a final failure must be visible.
+        if ((await job.getState().catch(() => "")) === "failed") {
+          console.error(`[${stage}] paper ${job.data.paperId} reference ${job.data.bibEntryId}: ${err.message}`);
+        }
+        return;
+      }
       try {
         // Final failure = the job is in the failed set. Covers exhausted attempts,
         // UnrecoverableError and stalled-limit failures alike; retries are "delayed".

@@ -2,6 +2,7 @@ import { and, asc, count, eq, inArray, notInArray } from "drizzle-orm";
 import type { ExtractedDocument, Reference } from "../core/types.js";
 import type { Db } from "../infra/db/client.js";
 import type { RelevanceResult } from "../core/types.js";
+import { VERIFIER_VERSION } from "../relevance/verifier.js";
 import {
   bibEntries,
   citationContexts,
@@ -15,7 +16,7 @@ import {
 import type { Source } from "./ingest.js";
 import type { Resolution } from "./resolve.js";
 
-export async function createPaper(db: Db, source: Source, options: { relevance: boolean }): Promise<number> {
+export async function createPaper(db: Db, source: Source, options: { relevance: boolean; llm?: string }): Promise<number> {
   const [row] = await db
     .insert(papers)
     .values({
@@ -217,23 +218,69 @@ export async function getExistence(db: Db, bibEntryId: number) {
 }
 
 /** Upsert one context's relevance verdict (idempotent for retried jobs). */
-export async function saveRelevance(db: Db, citationContextId: number, r: RelevanceResult, citedText: string): Promise<void> {
-  const values = { citationContextId, verdict: r.verdict, reason: r.reason, method: r.method, similarity: r.similarity, model: r.model, citedText };
+export async function saveRelevance(db: Db, citationContextId: number, r: RelevanceResult, citedText: string, abstractSource: string | null): Promise<void> {
+  const values = {
+    citationContextId,
+    verdict: r.verdict,
+    reason: r.reason,
+    method: r.method,
+    similarity: r.similarity,
+    model: r.model,
+    citedText,
+    abstractSource,
+    verifierVersion: VERIFIER_VERSION,
+  };
   await db
     .insert(relevanceVerdicts)
     .values(stripNul(values))
     .onConflictDoUpdate({ target: relevanceVerdicts.citationContextId, set: stripNul(values) });
 }
 
-/** Relevance verdict → count over a paper's citing contexts that got one. */
-export async function relevanceCounts(db: Db, paperId: number): Promise<Record<string, number>> {
+/**
+ * Relevance coverage for a paper, per citing context (not per reference): contexts of
+ * existing works that were judged (by verdict and method) and those left unjudged (a failed
+ * or still-missing job), so a broken relevance stage can't look like a clean result.
+ */
+export async function relevanceSummary(db: Db, paperId: number) {
   const rows = await db
-    .select({ verdict: relevanceVerdicts.verdict, n: count() })
+    .select({ verdict: relevanceVerdicts.verdict, method: relevanceVerdicts.method, n: count() })
+    .from(citationContexts)
+    .innerJoin(existenceVerdicts, eq(existenceVerdicts.bibEntryId, citationContexts.bibEntryId))
+    .leftJoin(relevanceVerdicts, eq(relevanceVerdicts.citationContextId, citationContexts.id))
+    .where(and(eq(citationContexts.paperId, paperId), inArray(existenceVerdicts.verdict, ["VERIFIED", "MISMATCH"])))
+    .groupBy(relevanceVerdicts.verdict, relevanceVerdicts.method);
+  const eligible = rows.reduce((n, r) => n + r.n, 0);
+  const unjudged = rows.find((r) => r.verdict === null)?.n ?? 0;
+  const byVerdict: Record<string, number> = {};
+  let noAbstractOrFailed = 0;
+  let prefilter = 0;
+  for (const r of rows) {
+    if (!r.verdict) continue;
+    byVerdict[r.verdict] = (byVerdict[r.verdict] ?? 0) + r.n;
+    if (r.method === "skipped") noAbstractOrFailed += r.n;
+    if (r.method === "prefilter") prefilter += r.n;
+  }
+  return { eligible, unjudged, byVerdict, notJudgedByModel: noAbstractOrFailed, prefilter };
+}
+
+/** Contexts (of the given ones) that already have a relevance verdict. */
+export async function doneContextIds(db: Db, contextIds: number[]): Promise<Set<number>> {
+  if (contextIds.length === 0) return new Set();
+  const rows = await db
+    .select({ id: relevanceVerdicts.citationContextId })
+    .from(relevanceVerdicts)
+    .where(inArray(relevanceVerdicts.citationContextId, contextIds));
+  return new Set(rows.map((r) => r.id));
+}
+
+/** LLM-judged verdicts so far for a paper (the per-paper spend cap counts these). */
+export async function llmVerdictCount(db: Db, paperId: number): Promise<number> {
+  const [row] = await db
+    .select({ n: count() })
     .from(relevanceVerdicts)
     .innerJoin(citationContexts, eq(citationContexts.id, relevanceVerdicts.citationContextId))
-    .where(eq(citationContexts.paperId, paperId))
-    .groupBy(relevanceVerdicts.verdict);
-  return Object.fromEntries(rows.map((r) => [r.verdict, r.n]));
+    .where(and(eq(citationContexts.paperId, paperId), eq(relevanceVerdicts.method, "llm")));
+  return row?.n ?? 0;
 }
 
 /** Every stored candidate record for a reference, best first. */

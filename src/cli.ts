@@ -8,7 +8,7 @@ import { createQueuedGateway } from "./infra/http/gateway.js";
 import { runMigrations } from "./infra/db/migrate.js";
 import { parseSource } from "./pipeline/ingest.js";
 import { createQueues, redisConnection } from "./pipeline/queues.js";
-import { createPaper, getPaperStatus, relevanceCounts, setPaperStatus, verdictCounts } from "./pipeline/store.js";
+import { createPaper, getPaperStatus, relevanceSummary, setPaperStatus, verdictCounts } from "./pipeline/store.js";
 import { localEmbedder } from "./relevance/embedder.js";
 import { selectLLM, type LLMChoice } from "./relevance/llm/select.js";
 import { createRelevanceVerifier } from "./relevance/verifier.js";
@@ -42,12 +42,17 @@ program
     const api = createQueuedGateway(connection);
     api.startWorkers();
     const scholarly = createScholarlyDomain(api.gateway);
+    const embedder = localEmbedder();
+    if (llm) embedder.warmup(); // the first load (download + ONNX init) overlaps ingest/resolve
     const deps: PipelineDeps = {
       db,
       queues,
       extractor: new GrobidExtractor(config.grobidUrl),
       domains: new Map([[scholarly.kind, scholarly]]),
-      verifier: llm ? createRelevanceVerifier({ embedder: localEmbedder(), llm }) : null,
+      verifier: llm
+        ? createRelevanceVerifier({ embedder, llm, prefilterThreshold: process.env.PREFILTER_THRESHOLD ? Number(process.env.PREFILTER_THRESHOLD) : null })
+        : null,
+      verifierProvider: llm?.name ?? null,
     };
     const workers = startWorkers(deps, connection);
     let paperId: number | undefined;
@@ -58,7 +63,7 @@ program
     process.once("SIGTERM", () => onSignal("SIGTERM"));
 
     try {
-      paperId = await createPaper(db, source, { relevance: opts.relevance });
+      paperId = await createPaper(db, source, { relevance: opts.relevance, ...(llm ? { llm: llm.name } : {}) });
       console.log(`paper #${paperId}: ${source.kind} ${source.kind === "arxiv" ? source.id : source.path}`);
       console.log(`  relevance: ${llm ? `${llm.name} ${llm.model} (abstract-level, needs human review)` : "off"}`);
       await queues.queues.ingest.add("ingest", { paperId });
@@ -73,8 +78,13 @@ program
           const counts = await verdictCounts(db, paperId);
           console.log(`  existence: ${Object.entries(counts).map(([v, n]) => `${v} ${n}`).join(", ") || "no references"}`);
           if (llm) {
-            const rel = await relevanceCounts(db, paperId);
-            console.log(`  relevance (abstract-level, needs human review): ${Object.entries(rel).map(([v, n]) => `${v} ${n}`).join(", ") || "none"}`);
+            const rel = await relevanceSummary(db, paperId);
+            const verdicts = Object.entries(rel.byVerdict).map(([v, n]) => `${v} ${n}`).join(", ") || "none";
+            console.log(`  relevance, per citing context (abstract-level, needs human review): ${verdicts}`);
+            console.log(
+              `    ${rel.eligible} contexts of existing works; ${rel.prefilter} by embedding pre-filter; ` +
+                `${rel.notJudgedByModel} not judged (no abstract, failure or budget); ${rel.unjudged} missing`,
+            );
           }
           break;
         }
