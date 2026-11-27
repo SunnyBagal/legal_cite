@@ -1,8 +1,9 @@
 import { defineConfig } from "drizzle-kit";
+import { config } from "./src/config.js";
 
 export default defineConfig({
   dialect: "postgresql",
   schema: "./src/infra/db/schema.ts",
   out: "./drizzle",
-  dbCredentials: { url: process.env.DATABASE_URL ?? "postgres://citecheck:citecheck@localhost:5433/citecheck" },
+  dbCredentials: { url: config.databaseUrl },
 });
