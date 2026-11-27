@@ -1,8 +1,17 @@
-import { and, asc, eq, inArray, ne } from "drizzle-orm";
+import { and, asc, count, eq, inArray, ne } from "drizzle-orm";
 import type { ExtractedDocument, Reference } from "../core/types.js";
 import type { Db } from "../infra/db/client.js";
-import { bibEntries, citationContexts, papers, type PaperStatus } from "../infra/db/schema.js";
+import {
+  bibEntries,
+  citationContexts,
+  existenceVerdicts,
+  papers,
+  resolutionCandidates,
+  resolverCalls,
+  type PaperStatus,
+} from "../infra/db/schema.js";
 import type { Source } from "./ingest.js";
+import type { Resolution } from "./resolve.js";
 
 export async function createPaper(db: Db, source: Source, options: { relevance: boolean }): Promise<number> {
   const [row] = await db
@@ -130,4 +139,65 @@ export async function getContexts(db: Db, bibEntryIds: number[]) {
     .from(citationContexts)
     .where(inArray(citationContexts.bibEntryId, bibEntryIds))
     .orderBy(asc(citationContexts.ordinal));
+}
+
+export async function getBibEntryIds(db: Db, paperId: number): Promise<number[]> {
+  const rows = await db.select({ id: bibEntries.id }).from(bibEntries).where(eq(bibEntries.paperId, paperId)).orderBy(asc(bibEntries.id));
+  return rows.map((r) => r.id);
+}
+
+/**
+ * Persist one reference's resolution atomically: raw resolver calls, every scored candidate
+ * (with its breakdown) and the verdict. Idempotent: a retried job replaces the previous one.
+ */
+export async function saveResolution(db: Db, bibEntryId: number, r: Resolution): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.delete(existenceVerdicts).where(eq(existenceVerdicts.bibEntryId, bibEntryId));
+    await tx.delete(resolutionCandidates).where(eq(resolutionCandidates.bibEntryId, bibEntryId));
+    await tx.delete(resolverCalls).where(eq(resolverCalls.bibEntryId, bibEntryId));
+
+    if (r.calls.length > 0) {
+      await tx.insert(resolverCalls).values(
+        r.calls.map((c) => ({ bibEntryId, resolver: c.resolver, candidateCount: c.candidateCount, error: c.error, raw: c.raw ?? null })),
+      );
+    }
+    const inserted =
+      r.result.scored.length === 0
+        ? []
+        : await tx
+            .insert(resolutionCandidates)
+            .values(
+              r.result.scored.map((s, rank) => ({
+                bibEntryId,
+                source: s.candidate.source,
+                sourceId: s.candidate.sourceId,
+                rank,
+                record: s.candidate,
+                scoreTotal: s.breakdown.total,
+                breakdown: s.breakdown,
+              })),
+            )
+            .returning({ id: resolutionCandidates.id, source: resolutionCandidates.source, sourceId: resolutionCandidates.sourceId });
+    const m = r.result.match?.candidate;
+    const matchedCandidateId = m ? (inserted.find((c) => c.source === m.source && c.sourceId === m.sourceId)?.id ?? null) : null;
+    await tx.insert(existenceVerdicts).values({
+      bibEntryId,
+      verdict: r.result.verdict,
+      mismatches: r.result.mismatches,
+      matchedCandidateId,
+      reason: r.result.reason,
+      degraded: r.degraded,
+    });
+  });
+}
+
+/** Existence verdict → count for a paper; references without a verdict count as "ERROR". */
+export async function verdictCounts(db: Db, paperId: number): Promise<Record<string, number>> {
+  const rows = await db
+    .select({ verdict: existenceVerdicts.verdict, n: count() })
+    .from(bibEntries)
+    .leftJoin(existenceVerdicts, eq(existenceVerdicts.bibEntryId, bibEntries.id))
+    .where(eq(bibEntries.paperId, paperId))
+    .groupBy(existenceVerdicts.verdict);
+  return Object.fromEntries(rows.map((r) => [r.verdict ?? "ERROR", r.n]));
 }

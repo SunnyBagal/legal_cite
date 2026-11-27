@@ -3,8 +3,9 @@ import { UnrecoverableError, Worker, type ConnectionOptions, type Job, type Work
 import type { CitationDomain, Extractor } from "../core/types.js";
 import type { Db } from "../infra/db/client.js";
 import { ingest, pdfPath, type Source } from "./ingest.js";
-import { STAGES, type Queues, type Stage, type StageJob } from "./queues.js";
-import { getPaper, saveExtraction, setPaperStatus } from "./store.js";
+import { defaultJobOptions, STAGES, type Queues, type Stage, type StageJob } from "./queues.js";
+import { resolveReference } from "./resolve.js";
+import { getBibEntry, getPaper, saveExtraction, saveResolution, setPaperStatus, toReference } from "./store.js";
 
 export interface PipelineDeps {
   db: Db;
@@ -43,7 +44,41 @@ const processors: Partial<Record<Stage, Processor>> = {
     if (doc.references.length === 0) throw new UnrecoverableError("no references extracted from the PDF");
     const bibEntryIds = await saveExtraction(db, paper.id, doc);
     await setPaperStatus(db, paper.id, "extracted");
+
+    // One resolve job per reference, all children of the paper's report job: the report
+    // runs once every reference has finished, and a reference whose job fails for good is
+    // ignored rather than blocking the report (it shows up without a verdict).
+    await deps.queues.flows.add({
+      name: "report",
+      queueName: "report",
+      data: { paperId: paper.id },
+      children: bibEntryIds.map((bibEntryId) => ({
+        name: "resolve",
+        queueName: "resolve",
+        data: { paperId: paper.id, bibEntryId },
+        opts: { ...defaultJobOptions, ignoreDependencyOnFailure: true },
+      })),
+      opts: defaultJobOptions,
+    });
+    await setPaperStatus(db, paper.id, "resolving");
     return { references: bibEntryIds.length, contexts: doc.contexts.length };
+  },
+
+  async resolve(job, { db, domains }) {
+    const paper = await activePaper(db, job.data.paperId);
+    if (!paper) return { skipped: "paper failed" };
+    const ref = toReference(await getBibEntry(db, job.data.bibEntryId!));
+    const domain = domains.get(ref.kind);
+    if (!domain) throw new UnrecoverableError(`no citation domain registered for kind "${ref.kind}"`);
+    const resolution = await resolveReference(domain, ref);
+    await saveResolution(db, job.data.bibEntryId!, resolution);
+    return { verdict: resolution.result.verdict };
+  },
+
+  async report(job, { db }) {
+    const paper = await activePaper(db, job.data.paperId);
+    if (!paper) return { skipped: "paper failed" };
+    await setPaperStatus(db, paper.id, "reported");
   },
 };
 
