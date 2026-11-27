@@ -2,15 +2,16 @@ import { existsSync } from "node:fs";
 import { Command } from "commander";
 import { config } from "./config.js";
 import { GrobidExtractor } from "./domains/scholarly/grobid.js";
+import { createScholarlyDomain } from "./domains/scholarly/index.js";
 import { createDb } from "./infra/db/client.js";
+import { createQueuedGateway } from "./infra/http/gateway.js";
 import { runMigrations } from "./infra/db/migrate.js";
 import { parseSource } from "./pipeline/ingest.js";
 import { createQueues, redisConnection } from "./pipeline/queues.js";
-import { createPaper, getPaperStatus, setPaperStatus } from "./pipeline/store.js";
+import { createPaper, getPaperStatus, setPaperStatus, verdictCounts } from "./pipeline/store.js";
 import { startWorkers, type PipelineDeps } from "./pipeline/workers.js";
 
-/** The last stage implemented so far; a run is done when the paper reaches it. */
-const DONE_STATUS = "extracted";
+const DONE_STATUS = "reported";
 
 const program = new Command("citecheck").description("Check the citations in a research paper.");
 
@@ -28,7 +29,15 @@ program
     const connection = redisConnection();
     const { db, close: closeDb } = createDb();
     const queues = createQueues(connection);
-    const deps: PipelineDeps = { db, queues, extractor: new GrobidExtractor(config.grobidUrl), domains: new Map() };
+    const api = createQueuedGateway(connection);
+    api.startWorkers();
+    const scholarly = createScholarlyDomain(api.gateway);
+    const deps: PipelineDeps = {
+      db,
+      queues,
+      extractor: new GrobidExtractor(config.grobidUrl),
+      domains: new Map([[scholarly.kind, scholarly]]),
+    };
     const workers = startWorkers(deps, connection);
     let paperId: number | undefined;
     let stopReason: string | undefined;
@@ -47,7 +56,11 @@ program
         if (paper.status !== last) console.log(`  ${paper.status}`);
         last = paper.status;
         if (paper.status === "failed") throw new Error(paper.error ?? "pipeline failed");
-        if (paper.status === DONE_STATUS) break;
+        if (paper.status === DONE_STATUS) {
+          const counts = await verdictCounts(db, paperId);
+          console.log(`  existence: ${Object.entries(counts).map(([v, n]) => `${v} ${n}`).join(", ") || "no references"}`);
+          break;
+        }
         if (Date.now() > deadline) stopReason ??= `timed out after ${opts.timeout} min`;
         if (stopReason) {
           // Mark it failed so leftover jobs for this paper are skipped by the next run.
@@ -58,6 +71,7 @@ program
       }
     } finally {
       await workers.close();
+      await api.close();
       await queues.close();
       await closeDb();
     }
