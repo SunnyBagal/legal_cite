@@ -333,3 +333,23 @@ describe("parseTei: appended-document boundaries (M3 relevance findings)", () =>
     expect(card).toEqual(["b92", "b93", "b94"]);
   });
 });
+
+describe("parseTei: segment guard safety (M3 review)", () => {
+  it("keeps every context when a numbering restart shares the paper's single bibliography", () => {
+    // Sections 1,2,3 then a supplement numbered 1,2, all citing one 4-entry list (red team repro).
+    const body =
+      sec("1", `Intro ${bibr("[1]", "b0")}.`) + sec("2", `Method ${bibr("[2]", "b1")}.`) + sec("3", `Results ${bibr("[3]", "b2")}.`) +
+      sec("1", `Supp ${bibr("[1]", "b0")}.`) + sec("2", `More ${bibr("[4]", "b3")}.`);
+    expect(keysOf(teiDoc({ body, keys: K4 }))).toEqual(["b0", "b1", "b2", "b0", "b3"]);
+  });
+
+  it("does not map a bare marker with a dangling @target to a reference by its number", () => {
+    const body = sec("1", `Figure ${bibr("2", "b99")} shows it.`);
+    expect(keysOf(teiDoc({ body, keys: K4 }))).toEqual([]);
+  });
+
+  it("maps a superscript marker by number when the guard rejects its cross-segment target", () => {
+    const body = sec("1", `A ${bibr("[1]", "b0")} and ${bibr("2", "b3")}.`) + sec("2", "x") + sec("1", `B ${bibr("[1]", "b2")}.`);
+    expect(keysOf(teiDoc({ body, keys: K4 }))).toEqual(["b0", "b1", "b2"]);
+  });
+});

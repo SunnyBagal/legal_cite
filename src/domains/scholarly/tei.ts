@@ -45,27 +45,39 @@ interface Marker {
  * the same section or footnote. Scans the abstract, body divs, footnotes and back-matter
  * annexes (figure captions and tables are not scanned).
  *
- * GROBID links most markers itself via @target. When it doesn't (or the target is unknown),
- * and the marker is a bracketed number, we map [n] to entry n of the reference list of the
- * marker's document segment. A segment boundary is a restart of top-level section numbering
- * (e.g. an appended system card); each segment owns the next list in the bibliography.
+ * GROBID links most markers itself via @target. We map a marker [n] to entry n of its
+ * segment's reference list when GROBID didn't link it, linked it to an unknown entry (bracketed
+ * markers only), or linked it outside its segment's list (any numeric marker). A segment
+ * boundary is a restart of top-level section numbering (e.g. an appended system card). Segments
+ * own distinct lists only when their learned offsets strictly increase; otherwise the restart
+ * is an appendix sharing one bibliography and no segment guard applies.
  * See DECISIONS.md §Extraction.
  */
 function parseContexts(root: Element, keys: string[]): CitationContext[] {
   const index = new Map(keys.map((k, i) => [k, i]));
   const markers = collectMarkers(root);
   const offsets = segmentOffsets(markers, index);
+  // Distinct lists only if every later segment starts after the previous one.
+  const distinct = offsets.length > 1 && offsets.every((o, i) => i === 0 || o > offsets[i - 1]!);
+  const window = (seg: number) => {
+    const lo = offsets[seg] ?? 0;
+    const hi = distinct ? (offsets[seg + 1] ?? keys.length) : keys.length;
+    return [lo, Math.min(hi, keys.length)] as const;
+  };
 
   return markers.flatMap((m): CitationContext[] => {
     const base = { sentence: m.sentence, previousSentence: m.previousSentence, section: m.section, marker: m.text };
     const nums = markerNumbers(m.text);
     let targetIdx = m.target === null ? undefined : index.get(m.target);
+    let rejected = false;
     // A marker can only cite its own segment's list: GROBID links ambiguous numbers to the
     // wrong list (gpt4: the report's "[84,85]" linked into the system card's list).
-    if (targetIdx !== undefined && m.segment !== null && offsets.length > 1) {
-      const lo = offsets[m.segment] ?? 0;
-      const hi = offsets[m.segment + 1] ?? keys.length;
-      if (targetIdx < lo || targetIdx >= hi) targetIdx = undefined;
+    if (targetIdx !== undefined && m.segment !== null && distinct) {
+      const [lo, hi] = window(m.segment);
+      if (targetIdx < lo || targetIdx >= hi) {
+        targetIdx = undefined;
+        rejected = true;
+      }
     }
 
     if (targetIdx !== undefined) {
@@ -80,9 +92,10 @@ function parseContexts(root: Element, keys: string[]): CitationContext[] {
       ];
     }
 
-    if (!(m.bracketed || m.target !== null) || m.segment === null) return [];
-    const offset = offsets[m.segment] ?? 0;
-    const end = Math.min(offsets[m.segment + 1] ?? keys.length, keys.length);
+    // Bare numbers are often mis-tagged figure numbers: only map them when GROBID did link them
+    // (to the other document's list), never on a dangling or missing target.
+    if (!(m.bracketed || rejected) || m.segment === null) return [];
+    const [offset, end] = window(m.segment);
     return nums.flatMap((n) => {
       const i = offset + n - 1;
       const key = i >= offset && i < end ? keys[i] : undefined;
