@@ -250,11 +250,16 @@ function parseBiblStruct(b: Element): Reference {
   const doi = idnos.find((i) => i.getAttribute("type") === "DOI");
 
   // With a titled <analytic> part the work is an article/chapter and <monogr> is its venue.
-  // Otherwise <monogr> is the work itself (book, report, preprint) -- including when GROBID
-  // emits an empty <analytic><title/> and files the real title under <monogr>.
+  // An untitled <analytic> under a journal with volume/pages is a citation style that omits
+  // the article title (Nature, PRL): no title, the journal is the venue. Otherwise <monogr> is
+  // the work itself (book, report, preprint), including GROBID's empty <analytic><title/>
+  // quirk that files the real title under <monogr> (gpt4 b102, which has no volume/pages).
   const analyticTitle = titleOf(analytic);
-  const title = stripPublisher(analyticTitle ?? titleOf(monogr) ?? titleFromReportType(b));
-  const venue = analyticTitle && monogr ? (titleOf(monogr) ?? clean(text(first(monogr, "meeting")))) : null;
+  const monogrTitle = titleOf(monogr);
+  const journalStyle = analytic !== null && !analyticTitle && monogr !== null && looksLikeJournal(monogr);
+  const title = analyticTitle ?? (journalStyle ? null : stripPublisher(monogrTitle ?? titleFromReportType(b)));
+  const venue = (analyticTitle || journalStyle) && monogr ? (monogrTitle ?? clean(text(first(monogr, "meeting")))) : null;
+  const doiText = clean(text(doi ?? null))?.toLowerCase() ?? null;
 
   return {
     kind: "scholarly",
@@ -263,8 +268,8 @@ function parseBiblStruct(b: Element): Reference {
     authors: elements(analytic ?? monogr ?? b, "persName").map(parseAuthor).filter((a) => a.surname !== ""),
     year: parseYear(b),
     venue,
-    doi: clean(text(doi ?? null))?.toLowerCase() ?? null,
-    arxivId: findArxivId([...idnos.map((i) => i.textContent ?? ""), raw ?? ""]),
+    doi: doiText,
+    arxivId: findArxivId([...idnos.map((i) => i.textContent ?? ""), raw ?? ""]) ?? arxivIdFromDataCiteDoi(doiText),
     ids: {},
     raw,
   };
@@ -293,15 +298,33 @@ export function findArxivId(texts: string[]): string | null {
   return null;
 }
 
-/** GROBID sometimes glues the publisher onto a book title: "What We Owe The Future. Basic Books". */
+function looksLikeJournal(monogr: Element): boolean {
+  const t = first(monogr, "title");
+  const level = t?.getAttribute("level");
+  const scoped = elements(monogr, "biblScope").some((s) => ["volume", "page", "issue"].includes(s.getAttribute("unit") ?? ""));
+  return level === "j" && scoped;
+}
+
+function arxivIdFromDataCiteDoi(doi: string | null): string | null {
+  return /^10\.48550\/arxiv\.(.+)$/i.exec(doi ?? "")?.[1] ?? null;
+}
+
+const PUBLISHER = /\b(press|books|publishing|publishers|gutenberg|university|wiley|springer|elsevier)\b/i;
+
+/**
+ * Book/report titles only (never article titles). GROBID sometimes keeps what follows the
+ * title: 'What We Owe The Future. Basic Books', or IEEE '"Title," tech. rep., ...' (it kept
+ * everything after the closing quote). Linear-time string work: titles come from untrusted PDFs.
+ */
 function stripPublisher(title: string | null): string | null {
-  if (!title) return null;
-  // IEEE-style '"Title," tech. rep., ...': GROBID keeps everything after the closing quote.
-  const quoted = /^(.{8,}?)[,.]["”]\s.*$/.exec(title);
-  if (quoted) return quoted[1]!.trim();
-  const m = /^(.{8,}?)\.\s+((?:[A-Z][\w&':-]*\s*){1,8})$/.exec(title);
-  const tail = m?.[2] ?? "";
-  return m && /\b(press|books|publishing|publishers|gutenberg|university|wiley|springer|elsevier)\b/i.test(tail) ? m[1]!.trim() : title;
+  if (!title || title.length > 1000) return title;
+  const q = Math.max(title.indexOf(',"'), title.indexOf(",”"), title.indexOf('."'), title.indexOf(".”"));
+  if (q >= 8 && /\s/.test(title[q + 2] ?? "")) return title.slice(0, q).trim();
+  const cut = title.lastIndexOf(". ");
+  if (cut < 8) return title;
+  const tail = title.slice(cut + 2).trim().split(/\s+/);
+  const capitalized = tail.length <= 8 && tail.every((w) => /^[A-Z][\w&':-]*$/.test(w));
+  return capitalized && PUBLISHER.test(tail.join(" ")) ? title.slice(0, cut).trim() : title;
 }
 
 /** GROBID sometimes leaves <title/> empty and files "Title. arXiv preprint" under report_type. */

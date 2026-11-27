@@ -281,3 +281,30 @@ describe("parseTei: publisher glued onto a book title (synthetic)", () => {
     expect(parseTei(teiDoc({ body: "", keys: [], bibls })).references[0]?.title).toBe(expected);
   });
 });
+
+describe("parseTei: untitled journal-style references (M2 review, synthetic)", () => {
+  it("keeps the journal as venue, not title, when the article title is omitted (Nature/PRL style)", () => {
+    const inner = `<analytic><author><persName><surname>Abbott</surname></persName></author><idno type="DOI">10.1103/PhysRevLett.116.061102</idno></analytic>
+      <monogr><title level="j">Phys. Rev. Lett.</title><imprint><biblScope unit="volume">116</biblScope><biblScope unit="page">061102</biblScope><date type="published" when="2016"/></imprint></monogr>`;
+    const [r] = parseTei(teiDoc({ body: "", keys: [], bibls: bibl("b0", inner) })).references;
+    expect(r).toMatchObject({ title: null, venue: "Phys. Rev. Lett.", doi: "10.1103/physrevlett.116.061102" });
+  });
+
+  it("derives the arXiv id from an arXiv DataCite DOI", () => {
+    const inner = `<monogr><title level="m">Some preprint</title></monogr><idno type="DOI">10.48550/arXiv.2303.08774</idno>`;
+    expect(parseTei(teiDoc({ body: "", keys: [], bibls: bibl("b0", inner) })).references[0]?.arxivId).toBe("2303.08774");
+  });
+
+  it("leaves article titles containing quotes alone (publisher stripping is for book titles)", () => {
+    const inner = `<analytic><title level="a">Beyond "Accuracy," Toward Calibrated Models</title></analytic><monogr><title level="j">TMLR</title></monogr>`;
+    expect(parseTei(teiDoc({ body: "", keys: [], bibls: bibl("b0", inner) })).references[0]?.title).toBe('Beyond "Accuracy," Toward Calibrated Models');
+  });
+
+  it("strips a publisher suffix in linear time on pathological input", () => {
+    const evil = `Some title here. ${"A".repeat(5000)}!`;
+    const inner = `<monogr><title level="m">${evil}</title></monogr>`;
+    const t0 = performance.now();
+    parseTei(teiDoc({ body: "", keys: [], bibls: bibl("b0", inner) }));
+    expect(performance.now() - t0).toBeLessThan(200); // gstack-timing-ok: ReDoS guard; quadratic backtracking took >600 ms at n=38
+  });
+});
