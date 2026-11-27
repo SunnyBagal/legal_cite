@@ -15,6 +15,8 @@ const env = (name: string): string | undefined => {
 export const config = {
   databaseUrl: env("DATABASE_URL") ?? "postgres://citecheck:citecheck@localhost:5433/citecheck",
   redisUrl: env("REDIS_URL") ?? "redis://localhost:6380",
+  /** API response cache: a separate Redis with LRU eviction (BullMQ's must be noeviction). */
+  cacheRedisUrl: env("CACHE_REDIS_URL") ?? "redis://localhost:6381",
   grobidUrl: env("GROBID_URL") ?? "http://localhost:8070",
   cacheDir: env("CITECHECK_CACHE_DIR") ?? `${projectRoot}.cache`,
   contactEmail: env("CONTACT_EMAIL"),

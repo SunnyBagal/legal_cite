@@ -23,6 +23,18 @@ services:
       interval: 2s
       retries: 30
 
+  # API response cache, separate from BullMQ's Redis: LRU eviction is safe for a cache but
+  # would silently drop queue/lock keys, which BullMQ requires to be kept (noeviction).
+  redis-cache:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
+    ports: ["127.0.0.1:6381:6379"]
+    volumes: [rediscache:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 30
+
   grobid:
     # CRF-only image: native arm64 + amd64, ~0.5 GB. See DECISIONS.md.
     image: lfoppiano/grobid:0.9.1-crf
@@ -35,3 +47,4 @@ services:
 volumes:
   pgdata:
   redisdata:
+  rediscache:
