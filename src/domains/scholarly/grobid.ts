@@ -1,3 +1,4 @@
+import { UnrecoverableError } from "bullmq";
 import type { ExtractedDocument, Extractor } from "../../core/types.js";
 import { parseTei } from "./tei.js";
 
@@ -25,8 +26,13 @@ export class GrobidExtractor implements Extractor {
       body: form,
       signal: AbortSignal.timeout(this.timeoutMs),
     });
-    // 503 = GROBID's worker pool is busy; the job is retried with backoff.
-    if (!res.ok) throw new Error(`GROBID ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    // 204 = processed fine but nothing extractable (scanned/image-only PDF): permanent.
+    if (res.status === 204) throw new UnrecoverableError("GROBID extracted no content (scanned or image-only PDF?)");
+    // 503 = GROBID's worker pool is busy (retried with backoff); other 4xx = bad input (permanent).
+    if (!res.ok) {
+      const msg = `GROBID ${res.status}: ${(await res.text()).slice(0, 200)}`;
+      throw res.status >= 400 && res.status < 500 ? new UnrecoverableError(msg) : new Error(msg);
+    }
     return parseTei(await res.text());
   }
 }
