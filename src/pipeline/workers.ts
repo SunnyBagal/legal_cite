@@ -38,12 +38,27 @@ const processors: Partial<Record<Stage, Processor>> = {
     const { db } = deps;
     const paper = await activePaper(db, job.data.paperId);
     if (!paper) return { skipped: "paper failed" };
+    // Scoped to this paper row (createdAt survives DB resets, unlike the id alone).
+    const reportJobId = `report-${paper.id}-${paper.createdAt.getTime()}`;
+    if (await deps.queues.queues.report.getJob(reportJobId)) {
+      // A retry after the flow was created: re-extracting would delete entries it is resolving.
+      await setPaperStatus(db, paper.id, "resolving");
+      return { skipped: "flow already created" };
+    }
     if (!paper.pdfSha256) throw new UnrecoverableError(`paper ${paper.id} has no PDF`);
     const doc = await deps.extractor.extract(await readFile(pdfPath(paper.pdfSha256)));
     // An empty bibliography must not look like "all citations checked".
     if (doc.references.length === 0) throw new UnrecoverableError("no references extracted from the PDF");
     const bibEntryIds = await saveExtraction(db, paper.id, doc);
     await setPaperStatus(db, paper.id, "extracted");
+
+    // Warm caches per domain (e.g. one batched arXiv request); purely an optimization.
+    for (const domain of deps.domains.values()) {
+      const refs = doc.references.filter((r) => r.kind === domain.kind);
+      await domain.prefetch?.(refs).catch((err: unknown) => console.error(`[prefetch ${domain.kind}] ${String(err)}`));
+    }
+    // "resolving" before the flow exists, so a fast report can't be rewound to it.
+    await setPaperStatus(db, paper.id, "resolving");
 
     // One resolve job per reference, all children of the paper's report job: the report
     // runs once every reference has finished, and a reference whose job fails for good is
@@ -58,9 +73,8 @@ const processors: Partial<Record<Stage, Processor>> = {
         data: { paperId: paper.id, bibEntryId },
         opts: { ...defaultJobOptions, ignoreDependencyOnFailure: true },
       })),
-      opts: defaultJobOptions,
+      opts: { ...defaultJobOptions, jobId: reportJobId },
     });
-    await setPaperStatus(db, paper.id, "resolving");
     return { references: bibEntryIds.length, contexts: doc.contexts.length };
   },
 
@@ -71,6 +85,12 @@ const processors: Partial<Record<Stage, Processor>> = {
     const domain = domains.get(ref.kind);
     if (!domain) throw new UnrecoverableError(`no citation domain registered for kind "${ref.kind}"`);
     const resolution = await resolveReference(domain, ref);
+    // Failed lookups: retry while attempts remain (successful calls are cached, so it's cheap);
+    // on the last attempt keep the degraded result, which never says NOT_FOUND.
+    if (resolution.degraded && job.attemptsMade + 1 < (job.opts.attempts ?? 1)) {
+      const failed = resolution.calls.filter((c) => c.error).map((c) => `${c.resolver}: ${c.error}`);
+      throw new Error(`lookups failed, retrying: ${failed.join("; ")}`);
+    }
     await saveResolution(db, job.data.bibEntryId!, resolution);
     return { verdict: resolution.result.verdict };
   },
@@ -87,7 +107,9 @@ const WORKER_OPTIONS: Record<Stage, Pick<WorkerOptions, "concurrency" | "limiter
   // so local PDFs never wait behind it.
   ingest: { concurrency: 1 },
   extract: { concurrency: 2 },
-  resolve: { concurrency: 8 },
+  // Resolve jobs mostly wait on the per-API queues, which enforce the rate limits;
+  // a paper's worth of concurrency keeps fast APIs busy while slow ones drain.
+  resolve: { concurrency: 64 },
   relevance: { concurrency: 4 },
   report: { concurrency: 2 },
 };
@@ -115,5 +137,5 @@ export function startWorkers(deps: PipelineDeps, connection: ConnectionOptions) 
     });
     return [worker];
   });
-  return { close: () => Promise.all(workers.map((w) => w.close())) };
+  return { close: (force = false) => Promise.all(workers.map((w) => w.close(force))) };
 }

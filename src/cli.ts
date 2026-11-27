@@ -41,6 +41,7 @@ program
     const workers = startWorkers(deps, connection);
     let paperId: number | undefined;
     let stopReason: string | undefined;
+    let interrupted = false;
     const onSignal = (sig: string) => (stopReason = `interrupted (${sig})`);
     process.once("SIGINT", () => onSignal("SIGINT"));
     process.once("SIGTERM", () => onSignal("SIGTERM"));
@@ -65,13 +66,15 @@ program
         if (stopReason) {
           // Mark it failed so leftover jobs for this paper are skipped by the next run.
           await setPaperStatus(db, paperId, "failed", { error: stopReason });
+          interrupted = true;
           throw new Error(stopReason);
         }
         await new Promise((r) => setTimeout(r, 500));
       }
     } finally {
-      await workers.close();
-      await api.close();
+      // After a timeout/interrupt, don't wait for in-flight jobs (they can wait minutes on API queues).
+      await workers.close(interrupted);
+      await api.close(interrupted);
       await queues.close();
       await closeDb();
     }
