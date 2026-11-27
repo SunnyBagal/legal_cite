@@ -90,6 +90,11 @@ export interface CandidateRecord {
  */
 export interface Resolver {
   readonly name: string;
+  /**
+   * Lower tiers run first. The pipeline stops after a tier once the scorer says VERIFIED,
+   * so cheap identifier lookups (tier 1) spare rate-limited searches (tier 3).
+   */
+  readonly tier: number;
   /** Whether this resolver has anything to query for this reference. */
   applies(ref: Reference): boolean;
   resolve(ref: Reference): Promise<ResolverResult>;
