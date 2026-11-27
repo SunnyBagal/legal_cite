@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { parseTei } from "./tei.js";
+import { findArxivId, parseTei } from "./tei.js";
 
 // Real GROBID 0.9.1-crf output for arXiv 1706.03762v7 ("Attention Is All You Need"),
 // produced with segmentSentences=1, consolidateCitations=0, includeRawCitations=1.
@@ -109,8 +109,10 @@ describe("parseTei: numeric markers GROBID could not link", () => {
   const keysFor = (sentencePart: string) =>
     gpt4.contexts.filter((c) => c.sentence.includes(sentencePart)).map((c) => c.referenceKey);
 
-  it("keeps citations that appear in footnotes", () => {
-    expect(gpt4.contexts.filter((c) => c.linkedBy === "grobid")).toHaveLength(21);
+  it("keeps every GROBID-linked citation: body (incl. footnotes) and back-matter annex", () => {
+    // 21 linked refs in <body> (5 of them in footnotes) + 1 in a <back> annex.
+    expect(gpt4.contexts.filter((c) => c.linkedBy === "grobid")).toHaveLength(22);
+    expect(gpt4.contexts.filter((c) => c.section === "Footnote" && c.linkedBy === "grobid")).toHaveLength(5);
   });
 
   it("links unlinked [n] markers in the report to the report's list", () => {
@@ -127,5 +129,133 @@ describe("parseTei: numeric markers GROBID could not link", () => {
 
   it("does not treat numbers that aren't citation markers (e.g. '85.6') as references", () => {
     expect(gpt4.contexts.some((c) => c.marker === "85.6")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------- synthetic TEI (no fixtures needed)
+
+const bibl = (key: string, inner = `<monogr><title level="m">Work ${key}</title></monogr>`) =>
+  `<biblStruct xml:id="${key}">${inner}</biblStruct>`;
+const sec = (n: string | null, ...sentences: string[]) =>
+  `<div>${n === null ? "" : `<head n="${n}">S${n}</head>`}<p>${sentences.map((s) => `<s>${s}</s>`).join("")}</p></div>`;
+const teiDoc = (o: { body: string; keys: string[]; abstract?: string; back?: string; bibls?: string }) =>
+  `<TEI xmlns="http://www.tei-c.org/ns/1.0"><teiHeader><profileDesc><abstract>${o.abstract ?? ""}</abstract></profileDesc></teiHeader>` +
+  `<text><body>${o.body}</body><back>${o.back ?? ""}<div type="references"><listBibl>${o.bibls ?? o.keys.map((k) => bibl(k)).join("")}</listBibl></div></back></text></TEI>`;
+const bibr = (text: string, target?: string) => `<ref type="bibr"${target ? ` target="#${target}"` : ""}>${text}</ref>`;
+const keysOf = (tei: string) => parseTei(tei).contexts.map((c) => c.referenceKey);
+const K4 = ["b0", "b1", "b2", "b3"];
+
+describe("parseTei: numeric fallback edge cases (synthetic)", () => {
+  it("offsets a segment with no GROBID links by the previous segment's highest marker", () => {
+    const body = sec("1", `A ${bibr("[1]")}.`) + sec("2", `B ${bibr("[2]")}.`) + sec("1", `C ${bibr("[1]")}.`);
+    expect(keysOf(teiDoc({ body, keys: K4 }))).toEqual(["b0", "b1", "b2"]);
+  });
+
+  it("does not start a new segment on a sub-section head like n=\"1.1\"", () => {
+    const body = sec("2", `A ${bibr("[1]")}.`) + sec("1.1", `B ${bibr("[2]")}.`);
+    expect(keysOf(teiDoc({ body, keys: K4 }))).toEqual(["b0", "b1"]);
+  });
+
+  it("expands several bracket groups inside one ref, e.g. '[1] [2]' and '[3][4]'", () => {
+    const body = sec("1", `A ${bibr("[1] [2]")} and B ${bibr("[3][4]")}.`);
+    expect(keysOf(teiDoc({ body, keys: K4 }))).toEqual(["b0", "b1", "b2", "b3"]);
+  });
+
+  it("ignores bare numbers GROBID mis-tags as citations (figure numbers, scores)", () => {
+    const body = sec("1", `Figure ${bibr("1")}.`, `Score ${bibr("85.6")} and ${bibr("3%")}.`, `Real ${bibr("[2,")}${bibr("3")}${bibr("4]")}.`);
+    expect(keysOf(teiDoc({ body, keys: K4 }))).toEqual(["b1", "b2", "b3"]);
+  });
+
+  it("expands a GROBID-linked range marker to every number in the range", () => {
+    const body = sec("1", `A ${bibr("[2-4]", "b1")}.`);
+    expect(keysOf(teiDoc({ body, keys: K4 }))).toEqual(["b1", "b2", "b3"]);
+  });
+
+  it("falls back to the number when @target names no bibliography entry", () => {
+    const body = sec("1", `A ${bibr("[2]", "b99")}.`);
+    expect(keysOf(teiDoc({ body, keys: K4 }))).toEqual(["b1"]);
+  });
+
+  it("attributes a citation that GROBID pushed to the start of the next sentence to the sentence before", () => {
+    const body = sec("1", "Zero.", "First claim.", `${bibr("[1,")}${bibr("2]")} Next sentence.`);
+    const ctx = parseTei(teiDoc({ body, keys: K4 })).contexts;
+    expect(ctx.map((c) => c.sentence)).toEqual(["First claim.", "First claim."]);
+    expect(ctx[0]?.previousSentence).toBe("Zero.");
+  });
+
+  it("resolves footnote markers with the segment of the footnote's anchor, not the last segment", () => {
+    const body =
+      sec("1", `A ${bibr("[1]")} see note<ref type="foot" target="#foot_0">1</ref>.`) +
+      sec("2", `B ${bibr("[2]")}.`) +
+      sec("1", `C ${bibr("[1]")}.`) +
+      `<note place="foot" xml:id="foot_0"><p><s>Footnote cites ${bibr("[2]")}.</s></p></note>`;
+    const ctx = parseTei(teiDoc({ body, keys: K4 })).contexts;
+    expect(ctx.find((c) => c.section === "Footnote")?.referenceKey).toBe("b1");
+  });
+
+  it("never links past the end of a segment's list into the next segment's list", () => {
+    // Segment 0's list is b0–b1 (learned from the link); [3] in segment 0 has no entry.
+    const body = sec("1", `A ${bibr("[1]", "b0")} ${bibr("[3]")}.`) + sec("2", "x") + sec("1", `B ${bibr("[1]", "b2")}.`);
+    expect(keysOf(teiDoc({ body, keys: K4 }))).toEqual(["b0", "b2"]);
+  });
+
+  it("captures citations in the abstract and in back-matter annexes", () => {
+    const tei = teiDoc({
+      abstract: `<div><p><s>Abstract cites ${bibr("[1]")}.</s></p></div>`,
+      body: sec("1", `Body ${bibr("[2]")}.`),
+      back: `<div type="annex">${sec("A", `Appendix cites ${bibr("[3]")}.`)}</div>`,
+      keys: K4,
+    });
+    const ctx = parseTei(tei).contexts;
+    expect(ctx.map((c) => [c.referenceKey, c.section])).toEqual([
+      ["b0", "Abstract"],
+      ["b1", "S1"],
+      ["b2", "SA"],
+    ]);
+  });
+});
+
+describe("parseTei: bibliography edge cases (synthetic)", () => {
+  it("uses the monograph title when GROBID leaves the analytic title empty", () => {
+    const inner = `<analytic><title/><author><persName><surname>Bai</surname></persName></author></analytic><monogr><title level="j">Training a helpful assistant</title></monogr>`;
+    const [r] = parseTei(teiDoc({ body: "", keys: [], bibls: bibl("b0", inner) })).references;
+    expect(r?.title).toBe("Training a helpful assistant");
+    expect(r?.venue).toBeNull();
+  });
+
+  it("gives entries without an xml:id a unique key", () => {
+    const bibls = `<biblStruct><monogr><title>X</title></monogr></biblStruct><biblStruct><monogr><title>Y</title></monogr></biblStruct>`;
+    const keys = parseTei(teiDoc({ body: "", keys: [], bibls })).references.map((r) => r.key);
+    expect(new Set(keys).size).toBe(2);
+  });
+});
+
+describe("findArxivId", () => {
+  it.each([
+    ["arXiv:hep-th/9711200v2", "hep-th/9711200"],
+    ["CoRR, abs/cs/0112017", "cs/0112017"],
+    ["arXiv preprint arXiv:2303.08774v3", "2303.08774"],
+    ["Neural computation, 9(8)", null],
+  ])("%s → %s", (t, id) => {
+    expect(findArxivId([t])).toBe(id);
+  });
+});
+
+describe("parseTei: regressions found in review (gpt4 fixture)", () => {
+  const gpt4 = parseTei(readFileSync(new URL("../../../test/fixtures/gpt4.tei.xml", import.meta.url), "utf8"));
+
+  it("b102 (empty analytic title) keeps its title instead of storing it as the venue", () => {
+    const b102 = gpt4.references.find((r) => r.key === "b102");
+    expect(b102?.title).toMatch(/^Training a Helpful and Harmless Assistant/i);
+    expect(b102?.venue).toBeNull();
+  });
+
+  it("does not turn figure captions into citation contexts", () => {
+    expect(gpt4.contexts.filter((c) => /^Figure \d/.test(c.sentence))).toEqual([]);
+  });
+
+  it("links both groups of '[77] [78]' and '[89][90]'", () => {
+    expect(gpt4.contexts.filter((c) => c.marker === "[77] [78]")).toHaveLength(2);
+    expect(gpt4.contexts.filter((c) => c.marker === "[89][90]")).toHaveLength(2);
   });
 });
