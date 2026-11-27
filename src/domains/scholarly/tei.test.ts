@@ -308,3 +308,28 @@ describe("parseTei: untitled journal-style references (M2 review, synthetic)", (
     expect(performance.now() - t0).toBeLessThan(200); // gstack-timing-ok: ReDoS guard; quadratic backtracking took >600 ms at n=38
   });
 });
+
+describe("parseTei: appended-document boundaries (M3 relevance findings)", () => {
+  it("puts an unnumbered Abstract just before the numbering restart into the new segment", () => {
+    const body =
+      sec("1", `A ${bibr("[1]")}.`) + sec("2", `B ${bibr("[2]")}.`) +
+      `<div><head>System Card</head><p><s>x</s></p></div>` +
+      `<div><head>Abstract</head><p><s>Card abstract cites ${bibr("[1]")}.</s></p></div>` +
+      sec("1", `C ${bibr("[1]", "b2")}.`);
+    const ctx = parseTei(teiDoc({ body, keys: K4 })).contexts;
+    expect(ctx.find((c) => c.sentence.startsWith("Card abstract"))?.referenceKey).toBe("b2");
+  });
+
+  it("re-links a GROBID target that lies outside the marker's own segment list", () => {
+    // Segment 0 owns b0-b1 (learned), segment 1 owns b2-b3; GROBID linked segment 0's [2] to b3.
+    const body = sec("1", `A ${bibr("[1]", "b0")} and ${bibr("[2]", "b3")}.`) + sec("2", "x") + sec("1", `B ${bibr("[1]", "b2")}.`);
+    expect(keysOf(teiDoc({ body, keys: K4 }))).toEqual(["b0", "b1", "b2"]);
+  });
+
+  it("gpt4: the system card's own Abstract cites the system card's list", () => {
+    // Before the fix, "This system card analyzes GPT-4 ... [8,9,10]" linked to b7-b9 (report list).
+    const gpt4 = parseTei(loadFixture("gpt4"));
+    const card = gpt4.contexts.filter((c) => c.section === "Abstract" && c.sentence.includes("This system card analyzes GPT-4")).map((c) => c.referenceKey);
+    expect(card).toEqual(["b92", "b93", "b94"]);
+  });
+});

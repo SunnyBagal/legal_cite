@@ -59,7 +59,14 @@ function parseContexts(root: Element, keys: string[]): CitationContext[] {
   return markers.flatMap((m): CitationContext[] => {
     const base = { sentence: m.sentence, previousSentence: m.previousSentence, section: m.section, marker: m.text };
     const nums = markerNumbers(m.text);
-    const targetIdx = m.target === null ? undefined : index.get(m.target);
+    let targetIdx = m.target === null ? undefined : index.get(m.target);
+    // A marker can only cite its own segment's list: GROBID links ambiguous numbers to the
+    // wrong list (gpt4: the report's "[84,85]" linked into the system card's list).
+    if (targetIdx !== undefined && m.segment !== null && offsets.length > 1) {
+      const lo = offsets[m.segment] ?? 0;
+      const hi = offsets[m.segment + 1] ?? keys.length;
+      if (targetIdx < lo || targetIdx >= hi) targetIdx = undefined;
+    }
 
     if (targetIdx !== undefined) {
       // GROBID link. A linked range ("[2-4]" → #b1) links only its first number; expand the rest.
@@ -73,7 +80,7 @@ function parseContexts(root: Element, keys: string[]): CitationContext[] {
       ];
     }
 
-    if (!m.bracketed || m.segment === null) return [];
+    if (!(m.bracketed || m.target !== null) || m.segment === null) return [];
     const offset = offsets[m.segment] ?? 0;
     const end = Math.min(offsets[m.segment + 1] ?? keys.length, keys.length);
     return nums.flatMap((n) => {
@@ -90,14 +97,19 @@ function collectMarkers(root: Element): Marker[] {
   let segment = 0;
   let maxTop = 0;
 
-  const scan = (block: Element, section: string | null, seg: number | null) => {
+  /** Scan one block; returns the footnote ids anchored in it. */
+  const scan = (block: Element, section: string | null, seg: number | null): string[] => {
+    const footIds: string[] = [];
     const sentences = childElements(block)
       .filter((c) => c.tagName === "p")
       .flatMap((p) => elements(p, "s"));
     sentences.forEach((s, i) => {
       for (const r of elements(s, "ref")) {
         const t = r.getAttribute("target");
-        if (r.getAttribute("type") === "foot" && t?.startsWith("#") && seg !== null) footSegment.set(t.slice(1), seg);
+        if (r.getAttribute("type") === "foot" && t?.startsWith("#") && seg !== null) {
+          footSegment.set(t.slice(1), seg);
+          footIds.push(t.slice(1));
+        }
       }
       for (const run of bibrRuns(s)) {
         // A run that opens the sentence was printed after the previous sentence's full stop
@@ -119,6 +131,7 @@ function collectMarkers(root: Element): Marker[] {
         }
       }
     });
+    return footIds;
   };
 
   const abstract = first(root, "abstract");
@@ -126,6 +139,9 @@ function collectMarkers(root: Element): Marker[] {
 
   const body = first(root, "body");
   const notes: Element[] = [];
+  // Unnumbered divs since the last numbered one: an appended document's title/Abstract
+  // come before its "1 Introduction" restart and belong to the new segment.
+  let trailing: { head: string; markerStart: number; footIds: string[] }[] = [];
   for (const block of body ? childElements(body) : []) {
     if (block.tagName === "note") {
       notes.push(block); // GROBID emits every footnote at the end of <body>; place them by anchor below.
@@ -139,10 +155,20 @@ function collectMarkers(root: Element): Marker[] {
       if (top === 1 && maxTop > 1) {
         segment++;
         maxTop = 0;
+        const abs = trailing.findLastIndex((d) => /^abstract$/i.test(d.head));
+        if (abs >= 0) {
+          for (const m of markers.slice(trailing[abs]!.markerStart)) m.segment = segment;
+          for (const id of trailing.slice(abs).flatMap((d) => d.footIds)) footSegment.set(id, segment);
+        }
       }
       maxTop = Math.max(maxTop, top);
+      trailing = [];
+      scan(block, clean(text(head)), segment);
+      continue;
     }
-    scan(block, clean(text(head)), segment);
+    const markerStart = markers.length;
+    const footIds = scan(block, clean(text(head)), segment);
+    trailing.push({ head: clean(text(head)) ?? "", markerStart, footIds });
   }
 
   const back = first(root, "back");
@@ -216,8 +242,9 @@ function segmentOffsets(markers: Marker[], index: Map<string, number>): number[]
       }
     }
     const learned = [...votes.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
-    if (learned !== undefined) offsets.push(learned);
-    else if (seg === 0) offsets.push(0);
+    // The first list always starts the bibliography; don't let a stray link move it.
+    if (seg === 0) offsets.push(0);
+    else if (learned !== undefined) offsets.push(learned);
     else {
       const prev = markers.filter((m) => m.segment === seg - 1 && m.bracketed).flatMap((m) => markerNumbers(m.text));
       offsets.push((offsets[seg - 1] ?? 0) + Math.max(0, ...prev));
