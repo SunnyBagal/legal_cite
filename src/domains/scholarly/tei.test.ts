@@ -273,6 +273,9 @@ describe("parseTei: publisher glued onto a book title (synthetic)", () => {
     ["What We Owe The Future. Basic Books", "What We Owe The Future"],
     ["Zen and the Art of the Internet. Project Gutenberg", "Zen and the Art of the Internet"],
     ["Dr. Strangelove and the bomb", "Dr. Strangelove and the bomb"],
+    ["Superintelligence: Paths, Dangers, Strategies. United Kingdom: Oxford University Press", "Superintelligence: Paths, Dangers, Strategies"],
+    // IEEE style: the quoted title's closing quote kept the rest of the reference.
+    ['Truth, Lies, and Automation," tech. rep., Center for Security and Emerging Technology', "Truth, Lies, and Automation"],
   ])("%s → %s", (raw, expected) => {
     const bibls = `<biblStruct xml:id="b0"><monogr><title level="m">${raw}</title></monogr></biblStruct>`;
     expect(parseTei(teiDoc({ body: "", keys: [], bibls })).references[0]?.title).toBe(expected);

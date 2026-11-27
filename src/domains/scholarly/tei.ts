@@ -296,7 +296,10 @@ export function findArxivId(texts: string[]): string | null {
 /** GROBID sometimes glues the publisher onto a book title: "What We Owe The Future. Basic Books". */
 function stripPublisher(title: string | null): string | null {
   if (!title) return null;
-  const m = /^(.{8,}?)\.\s+((?:[A-Z][\w&'-]*\s*){1,4})$/.exec(title);
+  // IEEE-style '"Title," tech. rep., ...': GROBID keeps everything after the closing quote.
+  const quoted = /^(.{8,}?)[,.]["”]\s.*$/.exec(title);
+  if (quoted) return quoted[1]!.trim();
+  const m = /^(.{8,}?)\.\s+((?:[A-Z][\w&':-]*\s*){1,8})$/.exec(title);
   const tail = m?.[2] ?? "";
   return m && /\b(press|books|publishing|publishers|gutenberg|university|wiley|springer|elsevier)\b/i.test(tail) ? m[1]!.trim() : title;
 }
