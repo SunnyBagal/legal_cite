@@ -6,3 +6,4 @@ reports/
 eval/out/
 test/fixtures/*.pdf
 test/fixtures/*.xml
+.gstack/
