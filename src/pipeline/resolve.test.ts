@@ -71,14 +71,20 @@ describe("resolveReference", () => {
     const out = await resolveReference(domain([resolver("broken", 1, new Error("HTTP 500")), resolver("ok", 1, [HIT])]), REF);
     expect(out.result.verdict).toBe("VERIFIED");
     expect(out.calls.find((c) => c.resolver === "broken")?.error).toBe("HTTP 500");
-    expect(out.degraded).toBe(false);
+    expect(out.degraded).toBe(true);
   });
 
   it("says AMBIGUOUS (degraded), never NOT_FOUND, when every lookup failed", async () => {
     const out = await resolveReference(domain([resolver("a", 1, new Error("timeout")), resolver("b", 2, new Error("HTTP 429"))]), REF);
     expect(out.result.verdict).toBe("AMBIGUOUS");
     expect(out.degraded).toBe(true);
-    expect(out.result.reason).toMatch(/lookups failed/);
+    expect(out.result.reason).toMatch(/lookups failed \(a, b\)/);
+  });
+
+  it("passes resolver facts to the scorer", async () => {
+    const withFacts = { ...resolver("registry", 1, []), resolve: async () => ({ candidates: [], raw: null, facts: { "doi.registered": false } }) };
+    const out = await resolveReference(domain([withFacts]), { ...REF, title: "Fabricated nonsense about quantum widgets", doi: "10.9999/x" });
+    expect(out.result.reason).toMatch(/not registered/);
   });
 
   it("skips resolvers that don't apply", async () => {

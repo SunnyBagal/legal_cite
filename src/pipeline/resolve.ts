@@ -10,7 +10,7 @@ export interface ResolverCall {
 export interface Resolution {
   calls: ResolverCall[];
   result: ExistenceResult;
-  /** Every applicable lookup failed: the verdict reflects an outage, not the reference. */
+  /** Some lookup failed: the scorer was told, and never turns a failure into NOT_FOUND. */
   degraded: boolean;
 }
 
@@ -24,7 +24,9 @@ export async function resolveReference(domain: CitationDomain, ref: Reference): 
   const tiers = [...new Set(applicable.map((r) => r.tier))].sort((a, b) => a - b);
   const calls: ResolverCall[] = [];
   const candidates: CandidateRecord[] = [];
-  let result = domain.scorer.score(ref, []);
+  const facts: Record<string, boolean> = {};
+  const context = () => ({ facts, failedResolvers: calls.filter((c) => c.error !== null).map((c) => c.resolver) });
+  let result = domain.scorer.score(ref, [], context());
 
   for (const tier of tiers) {
     const inTier = applicable.filter((r) => r.tier === tier);
@@ -33,19 +35,15 @@ export async function resolveReference(domain: CitationDomain, ref: Reference): 
       const resolver = inTier[i]!.name;
       if (s.status === "fulfilled") {
         candidates.push(...s.value.candidates);
+        Object.assign(facts, s.value.facts ?? {});
         calls.push({ resolver, candidateCount: s.value.candidates.length, error: null, raw: s.value.raw });
       } else {
         calls.push({ resolver, candidateCount: 0, error: s.reason instanceof Error ? s.reason.message : String(s.reason), raw: null });
       }
     });
-    result = domain.scorer.score(ref, candidates);
+    result = domain.scorer.score(ref, candidates, context());
     if (result.verdict === "VERIFIED") break;
   }
 
-  const degraded = calls.length > 0 && calls.every((c) => c.error !== null);
-  if (degraded) {
-    const errors = calls.map((c) => `${c.resolver}: ${c.error}`).join("; ");
-    result = { ...result, verdict: "AMBIGUOUS", match: null, mismatches: [], reason: `All lookups failed (${errors}), so existence could not be checked.` };
-  }
-  return { calls, result, degraded };
+  return { calls, result, degraded: calls.some((c) => c.error !== null) };
 }
