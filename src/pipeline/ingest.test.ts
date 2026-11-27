@@ -1,5 +1,9 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { UnrecoverableError } from "bullmq";
 import { describe, expect, it } from "vitest";
-import { parseSource } from "./ingest.js";
+import { ingest, parseSource } from "./ingest.js";
 
 describe("parseSource", () => {
   it.each([
@@ -12,8 +16,23 @@ describe("parseSource", () => {
     expect(parseSource(input)).toEqual({ kind: "arxiv", id });
   });
 
-  it("treats anything else as a local PDF path", () => {
-    expect(parseSource("./papers/mine.pdf")).toEqual({ kind: "pdf", path: "./papers/mine.pdf" });
-    expect(parseSource("2303.08774.pdf.bak")).toEqual({ kind: "pdf", path: "2303.08774.pdf.bak" });
+  it("treats anything else as a local PDF path, stored absolute so any worker can read it", () => {
+    expect(parseSource("./papers/mine.pdf")).toEqual({ kind: "pdf", path: resolve("papers/mine.pdf") });
+    expect(parseSource("2303.08774.pdf.bak")).toEqual({ kind: "pdf", path: resolve("2303.08774.pdf.bak") });
+  });
+});
+
+describe("ingest", () => {
+  const tmp = () => mkdtempSync(join(tmpdir(), "citecheck-"));
+
+  it("rejects a file that isn't a PDF without retrying", async () => {
+    const p = join(tmp(), "x.pdf");
+    writeFileSync(p, "<html>not a pdf</html>");
+    await expect(ingest({ kind: "pdf", path: p })).rejects.toBeInstanceOf(UnrecoverableError);
+    await expect(ingest({ kind: "pdf", path: p })).rejects.toThrow(/not a PDF/);
+  });
+
+  it("rejects a missing file without retrying", async () => {
+    await expect(ingest({ kind: "pdf", path: join(tmp(), "nope.pdf") })).rejects.toBeInstanceOf(UnrecoverableError);
   });
 });
