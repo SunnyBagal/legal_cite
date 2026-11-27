@@ -1,7 +1,10 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { UnrecoverableError, Worker, type ConnectionOptions, type Job, type WorkerOptions } from "bullmq";
 import type { CitationDomain, Extractor, RelevanceVerifier } from "../core/types.js";
 import type { Db } from "../infra/db/client.js";
+import { loadReport } from "../report/build.js";
+import type { Reporter } from "../report/types.js";
 import { ingest, pdfPath, type Source } from "./ingest.js";
 import { defaultJobOptions, STAGES, type Queues, type Stage, type StageJob } from "./queues.js";
 import { judgeReference } from "./relevance.js";
@@ -31,6 +34,11 @@ export interface PipelineDeps {
   verifier: RelevanceVerifier | null;
   /** Provider name behind `verifier` ("anthropic" | "openai"). */
   verifierProvider: string | null;
+  /** Authoritative title for a source (e.g. arXiv metadata); GROBID's header title is a fallback. */
+  lookupTitle?: (source: Source) => Promise<string | null>;
+  /** Where report files are written: <reportDir>/<paperId>/. */
+  reportDir: string;
+  reporters: Reporter[];
 }
 
 /** Spend cap: at most this many LLM relevance calls per paper (env MAX_LLM_CALLS_PER_PAPER). */
@@ -45,13 +53,15 @@ async function activePaper(db: Db, paperId: number) {
 }
 
 const processors: Partial<Record<Stage, Processor>> = {
-  async ingest(job, { db, queues }) {
+  async ingest(job, deps) {
+    const { db, queues } = deps;
     const paper = await activePaper(db, job.data.paperId);
     if (!paper) return { skipped: "paper failed" };
     const source: Source =
       paper.sourceKind === "arxiv" ? { kind: "arxiv", id: paper.source } : { kind: "pdf", path: paper.source };
     const sha = await ingest(source);
-    await setPaperStatus(db, paper.id, "ingested", { pdfSha256: sha });
+    const title = await deps.lookupTitle?.(source).catch(() => null);
+    await setPaperStatus(db, paper.id, "ingested", { pdfSha256: sha, ...(title ? { title } : {}) });
     await queues.queues.extract.add("extract", { paperId: paper.id });
   },
 
@@ -152,10 +162,15 @@ const processors: Partial<Record<Stage, Processor>> = {
     );
   },
 
-  async report(job, { db }) {
+  async report(job, { db, reportDir, reporters }) {
     const paper = await activePaper(db, job.data.paperId);
     if (!paper) return { skipped: "paper failed" };
+    const report = await loadReport(db, paper.id);
+    const dir = join(reportDir, String(paper.id));
+    await mkdir(dir, { recursive: true });
+    for (const r of reporters) await writeFile(join(dir, r.filename), r.render(report));
     await setPaperStatus(db, paper.id, "reported");
+    return { dir };
   },
 };
 

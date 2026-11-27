@@ -1,4 +1,4 @@
-import { and, asc, count, eq, inArray, notInArray } from "drizzle-orm";
+import { and, asc, count, eq, inArray, notInArray, sql } from "drizzle-orm";
 import type { ExtractedDocument, Reference } from "../core/types.js";
 import type { Db } from "../infra/db/client.js";
 import type { RelevanceResult } from "../core/types.js";
@@ -69,7 +69,8 @@ export async function setPaperStatus(
 export async function saveExtraction(db: Db, paperId: number, doc: ExtractedDocument): Promise<number[]> {
   return db.transaction(async (tx) => {
     await tx.delete(bibEntries).where(eq(bibEntries.paperId, paperId)); // cascades to contexts
-    await tx.update(papers).set({ tei: doc.raw, title: doc.title }).where(eq(papers.id, paperId));
+    // Keep a title set at ingest (arXiv metadata beats GROBID's header model).
+    await tx.update(papers).set({ tei: doc.raw, title: sql`coalesce(${papers.title}, ${doc.title})` }).where(eq(papers.id, paperId));
     if (doc.references.length === 0) return [];
 
     const inserted = await tx
