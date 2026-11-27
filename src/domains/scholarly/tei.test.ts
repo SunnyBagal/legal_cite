@@ -1,10 +1,17 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { findArxivId, parseTei } from "./tei.js";
 
 // Real GROBID 0.9.1-crf output for arXiv 1706.03762v7 ("Attention Is All You Need"),
 // produced with segmentSentences=1, consolidateCitations=0, includeRawCitations=1.
-const tei = readFileSync(new URL("../../../test/fixtures/attention.tei.xml", import.meta.url), "utf8");
+// Real-paper fixtures are not committed (arXiv licence); `pnpm fixtures` regenerates them.
+function loadFixture(name: string): string {
+  const url = new URL(`../../../test/fixtures/${name}.tei.xml`, import.meta.url);
+  if (!existsSync(url)) throw new Error(`missing fixture ${name}.tei.xml: run \`docker compose up -d && pnpm fixtures\``);
+  return readFileSync(url, "utf8");
+}
+
+const tei = loadFixture("attention");
 const doc = parseTei(tei);
 const ref = (key: string) => {
   const r = doc.references.find((x) => x.key === key);
@@ -104,7 +111,7 @@ describe("parseTei: citation contexts", () => {
 // both lists unlinked (no @target), so 181 of 202 markers arrive without a target.
 describe("parseTei: numeric markers GROBID could not link", () => {
   const gpt4 = parseTei(
-    readFileSync(new URL("../../../test/fixtures/gpt4.tei.xml", import.meta.url), "utf8"),
+    loadFixture("gpt4"),
   );
   const keysFor = (sentencePart: string) =>
     gpt4.contexts.filter((c) => c.sentence.includes(sentencePart)).map((c) => c.referenceKey);
@@ -242,7 +249,7 @@ describe("findArxivId", () => {
 });
 
 describe("parseTei: regressions found in review (gpt4 fixture)", () => {
-  const gpt4 = parseTei(readFileSync(new URL("../../../test/fixtures/gpt4.tei.xml", import.meta.url), "utf8"));
+  const gpt4 = parseTei(loadFixture("gpt4"));
 
   it("b102 (empty analytic title) keeps its title instead of storing it as the venue", () => {
     const b102 = gpt4.references.find((r) => r.key === "b102");
