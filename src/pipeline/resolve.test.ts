@@ -47,6 +47,7 @@ const domain = (resolvers: Resolver[]): CitationDomain => ({
   resolvers,
   scorer: scholarlyScorer,
   abstracts: { fetch: async () => null },
+  sameWork: () => true,
 });
 
 describe("resolveReference", () => {

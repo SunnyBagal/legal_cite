@@ -6,7 +6,7 @@ import { crossrefDoiResolver, crossrefQueryResolver } from "./resolvers/crossref
 import { doiRegistryResolver } from "./resolvers/doiRegistry.js";
 import { openalexSearchResolver } from "./resolvers/openalex.js";
 import { s2MatchResolver } from "./resolvers/semanticScholar.js";
-import { scholarlyScorer } from "./scoring.js";
+import { isSameWorkRecord, scholarlyScorer } from "./scoring.js";
 
 /** Research-paper references: Crossref, Semantic Scholar, OpenAlex and arXiv. */
 export function createScholarlyDomain(gw: ApiGateway): CitationDomain {
@@ -24,5 +24,6 @@ export function createScholarlyDomain(gw: ApiGateway): CitationDomain {
     ],
     scorer: scholarlyScorer,
     abstracts: scholarlyAbstracts(gw),
+    sameWork: isSameWorkRecord,
   };
 }

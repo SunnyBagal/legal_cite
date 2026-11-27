@@ -91,6 +91,16 @@ export const THRESHOLDS = {
 
 export const scholarlyScorer: ExistenceScorer = { score };
 
+/**
+ * A stored candidate is a record of the cited work itself (used to borrow its abstract):
+ * the title matches AND authors, year or an identifier agree. A title alone can be a
+ * different work ("Deep learning", errata, replies).
+ */
+export function isSameWorkRecord(b: ScoreBreakdown): boolean {
+  if (b.titleSimilarity < THRESHOLDS.sameWork) return false;
+  return (b.authorOverlap ?? 0) >= THRESHOLDS.authorOverlap || (b.yearDelta !== null && b.yearDelta <= THRESHOLDS.yearTolerance) || b.identifierMatch === true;
+}
+
 const NO_CONTEXT: ScoringContext = { facts: {}, failedResolvers: [] };
 
 function score(ref: Reference, candidates: CandidateRecord[], context: ScoringContext = NO_CONTEXT): ExistenceResult {
