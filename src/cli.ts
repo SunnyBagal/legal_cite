@@ -8,7 +8,10 @@ import { createQueuedGateway } from "./infra/http/gateway.js";
 import { runMigrations } from "./infra/db/migrate.js";
 import { parseSource } from "./pipeline/ingest.js";
 import { createQueues, redisConnection } from "./pipeline/queues.js";
-import { createPaper, getPaperStatus, setPaperStatus, verdictCounts } from "./pipeline/store.js";
+import { createPaper, getPaperStatus, relevanceCounts, setPaperStatus, verdictCounts } from "./pipeline/store.js";
+import { localEmbedder } from "./relevance/embedder.js";
+import { selectLLM, type LLMChoice } from "./relevance/llm/select.js";
+import { createRelevanceVerifier } from "./relevance/verifier.js";
 import { startWorkers, type PipelineDeps } from "./pipeline/workers.js";
 
 const DONE_STATUS = "reported";
@@ -19,10 +22,17 @@ program
   .command("run")
   .argument("<source>", "arXiv id (e.g. 2303.08774) or path to a local PDF")
   .option("--timeout <minutes>", "give up after this many minutes", "30")
+  .option("--no-relevance", "skip the relevance stage (works without any LLM key)")
+  .option("--llm <provider>", "LLM for relevance: anthropic | openai (default: whichever key is set, Anthropic first)")
   .description("Run the full pipeline on one paper and wait for the result")
-  .action(async (input: string, opts: { timeout: string }) => {
+  .action(async (input: string, opts: { timeout: string; relevance: boolean; llm?: string }) => {
     const source = parseSource(input);
     if (source.kind === "pdf" && !existsSync(source.path)) throw new Error(`no such file: ${input}`);
+    if (opts.llm && opts.llm !== "anthropic" && opts.llm !== "openai") throw new Error(`--llm must be anthropic or openai, got ${opts.llm}`);
+    const llm = opts.relevance ? selectLLM(opts.llm as LLMChoice | undefined) : null;
+    if (opts.relevance && !llm) {
+      throw new Error("relevance needs an LLM: set ANTHROPIC_API_KEY or OPENAI_API_KEY in .env, or pass --no-relevance");
+    }
     const deadline = Date.now() + Number(opts.timeout) * 60_000;
 
     await runMigrations();
@@ -37,6 +47,7 @@ program
       queues,
       extractor: new GrobidExtractor(config.grobidUrl),
       domains: new Map([[scholarly.kind, scholarly]]),
+      verifier: llm ? createRelevanceVerifier({ embedder: localEmbedder(), llm }) : null,
     };
     const workers = startWorkers(deps, connection);
     let paperId: number | undefined;
@@ -47,8 +58,9 @@ program
     process.once("SIGTERM", () => onSignal("SIGTERM"));
 
     try {
-      paperId = await createPaper(db, source, { relevance: true });
+      paperId = await createPaper(db, source, { relevance: opts.relevance });
       console.log(`paper #${paperId}: ${source.kind} ${source.kind === "arxiv" ? source.id : source.path}`);
+      console.log(`  relevance: ${llm ? `${llm.name} ${llm.model} (abstract-level, needs human review)` : "off"}`);
       await queues.queues.ingest.add("ingest", { paperId });
 
       let last = "";
@@ -60,6 +72,10 @@ program
         if (paper.status === DONE_STATUS) {
           const counts = await verdictCounts(db, paperId);
           console.log(`  existence: ${Object.entries(counts).map(([v, n]) => `${v} ${n}`).join(", ") || "no references"}`);
+          if (llm) {
+            const rel = await relevanceCounts(db, paperId);
+            console.log(`  relevance (abstract-level, needs human review): ${Object.entries(rel).map(([v, n]) => `${v} ${n}`).join(", ") || "none"}`);
+          }
           break;
         }
         if (Date.now() > deadline) stopReason ??= `timed out after ${opts.timeout} min`;
