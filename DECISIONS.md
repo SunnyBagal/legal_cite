@@ -118,6 +118,53 @@ Postgres best-practices skill:
   - The metrics functions in eval.
 - The research skill ran as a background agent. Its output is `docs/apis.md`, with a
   primary-source URL for each fact.
-- Test fixtures: the GROBID TEI files are committed because the tests need them. The
-  source PDFs are not (`test/fixtures/*.pdf` is gitignored), because arXiv's terms allow
-  storing PDFs for research use but not serving them to others. The repo is local only.
+- **Test fixtures stay out of git.** The real-paper TEI fixtures contain the full text of
+  arXiv 1706.03762 and 2303.08774, and neither paper has an open licence (checked via
+  arXiv OAI-PMH: no `<license>` element, so arXiv's default non-exclusive licence
+  applies). Once the repo became public on GitHub, committing them would have meant
+  redistributing the papers. `pnpm fixtures` regenerates them, pinning each PDF by arXiv
+  version and sha256 and running the pinned GROBID image. Its output matches the
+  originals byte for byte except for GROBID's run timestamp. Tests name that command when
+  a fixture is missing. PDFs are also gitignored: arXiv allows storing them for research
+  use but not serving them.
+- **Pushing:** the original spec said to commit locally and not push. You later asked me
+  to push to https://github.com/SunnyBagal/legal_cite with granular commits, which
+  supersedes that rule. Every commit is one self-contained logical change. Still no PRs
+  and no gstack-ship.
+
+## M1 review (gstack `review`) outcomes
+
+The run included 6 specialists (testing, maintainability, security, performance, data
+migration, simplification), the Claude adversarial pass and a red team.
+
+- **Codex outside review: skipped.** It would send this repo's code to OpenAI, which you
+  haven't approved. Declined as an opt-in.
+- **Gate-integrity scan: unavailable.** The helper needs a base commit, and this was the
+  first commit. Every test file was new, so there was nothing relaxed to inspect.
+- **Fixed:**
+  - All TEI linking quirks the red team found: figure numbers taken as citations,
+    `[77] [78]`, citations pushed to the next sentence, footnote segments, list bounds,
+    linked ranges, the empty analytic title (b102), and missing `xml:id`s.
+  - Compose bound to loopback.
+  - Final-failure detection by job state, error listeners, `UnrecoverableError` for
+    permanent errors.
+  - The CLI deadline and SIGINT handling.
+  - Absolute paths and paths relative to the repo root, atomic PDF writes, the migration
+    advisory lock, Redis URL parsing, the single source for statuses, and a light status
+    poll.
+- **arXiv PDF crawl delay (15 s)** is enforced inside the download function, per process.
+  A BullMQ limiter on the ingest queue made local PDFs wait behind it.
+- **Deferred, with reasons:**
+  - Citations inside figure captions and tables are not scanned. GROBID often mis-tags
+    numbers there, and the precision risk outweighs recall.
+  - Inserts aren't chunked for more than ~5,900 references (Postgres's 65,535-parameter
+    limit). That's far beyond any paper here.
+  - Concurrent `citecheck run`s share queues and can process each other's papers.
+    Documented as "run one at a time". An interrupted run marks its paper failed, so its
+    leftover jobs are skipped.
+  - No Postgres or BullMQ integration tests yet. The failure paths (missing file, non-PDF,
+    SIGINT, a local PDF from another directory) are covered by recorded CLI probes. The
+    end-to-end QA after M4 revisits this.
+  - Skipped simplification advice: FlowProducer, the store helpers and the verdict arrays
+    are used from M2 to M5. The hand-rolled Redis URL parse is kept and now handles
+    `rediss://` and usernames.
