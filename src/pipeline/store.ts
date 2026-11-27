@@ -1,10 +1,8 @@
-import { asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, ne } from "drizzle-orm";
 import type { ExtractedDocument, Reference } from "../core/types.js";
 import type { Db } from "../infra/db/client.js";
-import { bibEntries, citationContexts, papers } from "../infra/db/schema.js";
+import { bibEntries, citationContexts, papers, type PaperStatus } from "../infra/db/schema.js";
 import type { Source } from "./ingest.js";
-
-export type PaperStatus = (typeof papers.$inferSelect)["status"];
 
 export async function createPaper(db: Db, source: Source, options: { relevance: boolean }): Promise<number> {
   const [row] = await db
@@ -19,26 +17,35 @@ export async function createPaper(db: Db, source: Source, options: { relevance: 
   return row.id;
 }
 
+/** Paper row without the (large) raw TEI column. */
 export async function getPaper(db: Db, paperId: number) {
-  const row = await db.query.papers.findFirst({ where: eq(papers.id, paperId) });
+  const row = await db.query.papers.findFirst({ where: eq(papers.id, paperId), columns: { tei: false } });
   if (!row) throw new Error(`paper ${paperId} not found`);
   return row;
 }
 
+/** Cheap poll for the CLI: status and error only. */
+export async function getPaperStatus(db: Db, paperId: number) {
+  const [row] = await db.select({ status: papers.status, error: papers.error }).from(papers).where(eq(papers.id, paperId));
+  if (!row) throw new Error(`paper ${paperId} not found`);
+  return row;
+}
+
+/**
+ * Move a paper to `status`. Never moves a paper out of "failed" (a stale or duplicate
+ * job must not resurrect it); "failed" itself always wins so errors are never lost.
+ */
 export async function setPaperStatus(
   db: Db,
   paperId: number,
-  status: "ingested" | "extracted" | "resolving" | "reported" | "failed",
+  status: Exclude<PaperStatus, "queued">,
   extra: { pdfSha256?: string; error?: string } = {},
 ): Promise<void> {
+  const terminal = status === "reported" || status === "failed";
   await db
     .update(papers)
-    .set({
-      status,
-      ...extra,
-      ...(status === "reported" || status === "failed" ? { finishedAt: new Date() } : {}),
-    })
-    .where(eq(papers.id, paperId));
+    .set({ status, error: null, ...extra, finishedAt: terminal ? new Date() : null })
+    .where(status === "failed" ? eq(papers.id, paperId) : and(eq(papers.id, paperId), ne(papers.status, "failed")));
 }
 
 /**

@@ -17,6 +17,11 @@ import type { Author, CandidateRecord, ScoreBreakdown } from "../../core/types.j
 // Conventions (see DECISIONS.md §Data model): bigint identity PKs, text over varchar,
 // timestamptz, enums as text + CHECK, every FK indexed, ON DELETE CASCADE from papers down.
 
+/** Paper lifecycle. "failed" and "reported" are terminal. Single source for type + CHECK. */
+export const PAPER_STATUSES = ["queued", "ingested", "extracted", "resolving", "reported", "failed"] as const;
+export type PaperStatus = (typeof PAPER_STATUSES)[number];
+const sqlList = (values: readonly string[]) => sql.raw(values.map((v) => `'${v}'`).join(", "));
+
 const id = () => bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity();
 const fk = (name: string) => bigint(name, { mode: "number" });
 const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
@@ -32,7 +37,7 @@ export const papers = pgTable(
     pdfSha256: text("pdf_sha256"),
     /** Raw GROBID TEI, kept for debugging. */
     tei: text("tei"),
-    status: text("status").notNull().default("queued"),
+    status: text("status").$type<PaperStatus>().notNull().default("queued"),
     error: text("error"),
     options: jsonb("options").$type<{ relevance: boolean }>().notNull(),
     createdAt: createdAt(),
@@ -40,10 +45,7 @@ export const papers = pgTable(
   },
   (t) => [
     check("papers_source_kind_chk", sql`${t.sourceKind} in ('arxiv', 'pdf')`),
-    check(
-      "papers_status_chk",
-      sql`${t.status} in ('queued', 'ingested', 'extracted', 'resolving', 'reported', 'failed')`,
-    ),
+    check("papers_status_chk", sql`${t.status} in (${sqlList(PAPER_STATUSES)})`),
   ],
 );
 
