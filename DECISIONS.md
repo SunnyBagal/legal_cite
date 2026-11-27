@@ -318,17 +318,20 @@ title and abstract, never the full text.
   key. Asking for relevance with no key fails at startup and names both fixes.
 - **Flow.** `report ← relevance(ref) ← resolve(ref)`, which is still one BullMQ queue per
   stage. Verdicts are upserted per citing context, so retries are idempotent.
-- **Pre-filter.** Local `all-MiniLM-L6-v2` embeddings (transformers.js on CPU) mean no API
-  key and no per-call cost; the first run downloads about 23 MB of weights. A pair is called
-  UNRELATED without an LLM call only when two things hold:
-  - Cosine similarity is below **0.05**. At 0.1, 1706.03762's "label smoothing [36]" was
-    wrongly flagged: it cites Inception-v3, whose abstract never mentions label smoothing,
-    at a similarity of 0.099. A clearly unrelated pair scored 0.004.
-  - The passage has **at least 12 words**, excluding markers. "For more background, see
-    [94]." is dissimilar to everything, so there low similarity means "no content", not
-    "unrelated".
+- **Pre-filter (revised in the M3 review).** Local `all-MiniLM-L6-v2` embeddings
+  (transformers.js on CPU, pinned to hub commit `751bff3`) compute the cosine similarity
+  between the citing sentence and the cited title plus abstract. The similarity is stored
+  with every verdict. **By default it never decides a verdict on its own.** On real papers,
+  every embedding-only UNRELATED it produced was wrong: 4 out of 4.
+  - 1706.03762's "label smoothing [36]" cites Inception-v3 (similarity 0.099).
+  - "For more background, see [94]." has no content to compare.
+  - A mislinked marker.
+  - A performance comparison with GROBID junk in the sentence (-0.006).
 
-  Both values are provisional until the eval harness (M5) measures them.
+  `PREFILTER_THRESHOLD=<x>` opts back in. Even then it only answers for GROBID-linked
+  sentences with 12 or more content words, excluding numeric and author-year markers. The
+  M5 eval measures pre-filter precision offline from the recorded similarities before
+  anyone should turn it on.
 - **LLM call.** One call per (context, cited title + abstract) pair, with strict JSON
   `{verdict: SUPPORTS|PARTIAL|UNRELATED|CANNOT_TELL, reason}` via native structured outputs.
   The system prompt tells the model to prefer PARTIAL or CANNOT_TELL over UNRELATED when the
@@ -371,3 +374,72 @@ title and abstract, never the full text.
   - GROBID linked ambiguous numbers into the other document's list.
 
   Both are fixed in `parseTei`, with regression tests.
+
+## M3 review (gstack `review`) outcomes
+
+The run included 5 specialists, the adversarial pass and a red team. Codex was skipped as
+before. Fixes landed as separate commits after the M3 feature commits.
+
+- **Never accuse on uncertain evidence.**
+  - An LLM UNRELATED on an inferred (`numeric-fallback`) link becomes CANNOT_TELL, with the
+    reason "the link itself may be wrong". On 2303.08774, "[84,85]" sits in appendix "H
+    System Card", which GROBID emits after the system card starts, and the old output blamed
+    the author for that parser error.
+  - The embedding pre-filter is opt-in (see above).
+- **Claude responses are parsed safely.** `messages.parse()` parses every text block. It
+  throws on a refusal's prose and on the declining model's partial text before a fallback
+  hop, so refusals and successful fallbacks became job errors. The provider now calls
+  `beta.messages.create` and:
+  1. checks `stop_reason` (`refusal` becomes LLMRefusalError, `max_tokens` becomes
+     LLMIncompleteError);
+  2. reads only the text after the last `fallback` block;
+  3. validates it with zod.
+
+  These paths are pinned by tests with recorded response shapes.
+- **Prompt injection.** The citing passage comes from the paper under review and the
+  abstract from third-party APIs. Both are fenced in `<citing_passage>`/`<cited_work>`, with
+  any such tags inside them stripped, and the system prompt declares them data. The output
+  schema limits an injection to choosing a label. The reason is capped at 500 characters with
+  control characters stripped, and M4 must HTML-escape everything it renders.
+- **Spend is capped.**
+  - A retried job skips contexts that already have a verdict.
+  - The per-paper LLM call budget is `MAX_LLM_CALLS_PER_PAPER`, default 600.
+  - Both SDK clients get a 60 s timeout and 2 retries.
+  - The OpenAI `reasoning` parameter goes only to reasoning-model families.
+- **Coverage is visible.**
+  - Failures after the last attempt become CANNOT_TELL rows ("the relevance check
+    failed: …", "the abstract could not be fetched").
+  - Non-fatal job failures are logged.
+  - The CLI summary counts **per citing context**, left-joined, and breaks it into eligible,
+    pre-filter, not judged by the model, and missing.
+- **Abstracts.** An abstract already stored on any record of the same work is used first.
+  Borrowing an abstract needs the title **and** the authors, year or an identifier to agree
+  (`CitationDomain.sameWork`), because a title alone can be a different work. On 1706.03762
+  this raised "no abstract" from 2 to 4, which is the intended trade.
+- **The label lives in the data.** `relevance_verdicts.scope` defaults to "abstract-level,
+  needs human review". `abstract_source` and `verifier_version` (`relevance-v2`) are stored
+  with each verdict.
+- **Per-run provider.** `papers.options.llm` records the provider. Leftover jobs from a run
+  with another provider are refused instead of being judged by the wrong model.
+- **Embedder.** A failed load is retried instead of cached, each text is embedded once, and
+  the model warms up at startup so its first load overlaps ingest and resolve.
+- **Segment guard regression (red-team repro).** An appendix numbered from 1 that shares the
+  paper's single bibliography produced offsets `[0, 0]`. That emptied segment 0's window and
+  dropped every main-body context. The guard and per-segment windows now apply only when
+  offsets strictly increase, meaning genuinely distinct lists. Bare markers are mapped by
+  number only when the guard rejected their target.
+- **Results after the fixes (Claude; relevance labels are abstract-level, needs human
+  review):**
+
+  | Paper | Contexts | SUPPORTS | PARTIAL | CANNOT_TELL | UNRELATED | Missing |
+  |---|---|---|---|---|---|---|
+  | 1706.03762 | 58 | 44 | 10 | 4 | 0 | 0 |
+  | 2303.08774 | 145 | 76 | 54 | 14 | 1 | 0 |
+
+  2303.08774's one UNRELATED was the embedding pre-filter. It no longer decides by default,
+  and this was confirmed by unit test, not by a fresh paid rerun.
+- **Deferred:**
+  - **Relevance on MISMATCH references stays on.** Those are mostly year disagreements on the
+    right work, and the "inferred link" rule already covers the risky case.
+  - **No startup probe of the model or its parameters.** A misconfigured model now shows up
+    as logged failures and as not-judged counts in the summary rather than as a clean result.
