@@ -136,27 +136,27 @@ const CSS = `
 --verified:#6cc79c;--mismatch:#e0b45a;--notfound:#f08a8a;--ambiguous:#b3a6ec;--unchecked:#a3adbb}}
 *{box-sizing:border-box}
 html{background:var(--paper);color:var(--ink);font:16px/1.5 var(--sans);font-variant-numeric:tabular-nums;scroll-padding-top:8rem}
-.skip{position:absolute;left:-999px;top:.5rem;background:var(--surface);color:var(--pencil);padding:.4rem .8rem;border-radius:4px;z-index:2}
+.skip{position:absolute;left:-999px;top:.5rem;background:var(--surface);color:var(--pencil);padding:.4rem .8rem;border-radius:0;z-index:2}
 .skip:focus{left:1rem}
 .visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 body{margin:0 auto;max-width:72rem;padding:2.5rem 1.5rem 4rem}
 a{color:var(--pencil);text-underline-offset:2px}
-:focus-visible{outline:2px solid var(--pencil);outline-offset:2px;border-radius:2px}
+:focus-visible{outline:2px solid var(--pencil);outline-offset:2px;border-radius:0}
 header h1{font:600 clamp(1.6rem,3.2vw,2.4rem)/1.15 var(--serif);margin:0 0 .4rem;max-width:40ch;text-wrap:balance}
 .source{color:var(--muted);margin:0 0 1.5rem}
 .lede{font:500 1.25rem/1.4 var(--sans);margin:0 0 .25rem;max-width:62ch}
 .lede-sub{color:var(--muted);margin:0 0 .25rem;max-width:72ch}
 .notice{border-left:3px solid var(--ambiguous);padding:.4rem .9rem;margin:1rem 0 0;max-width:72ch;color:var(--muted)}
 .strip{display:flex;flex-wrap:wrap;gap:3px;margin:2rem 0 .5rem;padding:0;list-style:none}
-.strip a{display:block;width:12px;height:28px;border-radius:2px;background:var(--c)}
+.strip a{display:block;width:12px;height:28px;border-radius:0;background:var(--c)}
 .strip a[aria-hidden-ref="true"]{opacity:.18}
 .strip a:hover{transform:scaleY(1.25)}
 .strip-legend{display:flex;flex-wrap:wrap;gap:1rem;color:var(--muted);font-size:.875rem;margin:0 0 1.5rem}
-.strip-legend span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--c);margin-right:.35rem}
+.strip-legend span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:0;background:var(--c);margin-right:.35rem}
 .controls{display:flex;flex-wrap:wrap;gap:.5rem 1.25rem;align-items:center;padding:.75rem 0;border-block:1px solid var(--rule);margin-bottom:.5rem;position:sticky;top:0;background:var(--paper);z-index:1}
 .controls label{display:inline-flex;gap:.35rem;align-items:center;cursor:pointer}
-.controls input[type=search]{font:inherit;padding:.3rem .6rem;border:1px solid var(--rule);border-radius:4px;background:var(--surface);color:var(--ink);min-width:16rem}
-.controls button{font:inherit;padding:.3rem .7rem;border:1px solid var(--rule);border-radius:4px;background:var(--surface);color:var(--ink);cursor:pointer;touch-action:manipulation}
+.controls input[type=search]{font:inherit;padding:.3rem .6rem;border:1px solid var(--rule);border-radius:0;background:var(--surface);color:var(--ink);min-width:16rem}
+.controls button{font:inherit;padding:.3rem .7rem;border:1px solid var(--rule);border-radius:0;background:var(--surface);color:var(--ink);cursor:pointer;touch-action:manipulation}
 .controls button:hover{border-color:var(--pencil)}
 .controls label,.controls input,.strip a,summary{touch-action:manipulation}
 .strip a:focus-visible{transform:scaleY(1.25)}
@@ -189,7 +189,7 @@ mark{background:none;color:inherit;font-weight:700;box-shadow:inset 0 -.35em 0 c
 .where{color:var(--muted);font-size:.875rem;margin:.15rem 0}
 .inferred{font-style:italic}
 .rel{margin:.2rem 0}
-.chip{display:inline-block;font-weight:650;font-size:.85rem;padding:.05rem .45rem;border-radius:3px;border:1.5px solid var(--c);color:var(--c);margin-right:.35rem}
+.chip{display:inline-block;font-weight:650;font-size:.85rem;padding:.05rem .45rem;border-radius:0;border:1.5px solid var(--c);color:var(--c);margin-right:.35rem}
 .r-SUPPORTS{--c:var(--verified)}.r-PARTIAL{--c:var(--mismatch)}.r-UNRELATED{--c:var(--notfound)}.r-CANNOT_TELL{--c:var(--unchecked)}
 .scope{display:block;color:var(--muted);font-size:.8rem;margin-top:.1rem}
 .none{color:var(--muted);font-style:italic}
