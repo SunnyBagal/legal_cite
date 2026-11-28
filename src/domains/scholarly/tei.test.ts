@@ -5,21 +5,23 @@ import { findArxivId, parseTei } from "./tei.js";
 // Real GROBID 0.9.1-crf output for arXiv 1706.03762v7 ("Attention Is All You Need"),
 // produced with segmentSentences=1, consolidateCitations=0, includeRawCitations=1.
 // Real-paper fixtures are not committed (arXiv licence); `pnpm fixtures` regenerates them.
+const fixtureUrl = (name: string) => new URL(`../../../test/fixtures/${name}.tei.xml`, import.meta.url);
+/** On a fresh clone the real-paper tests skip (with this notice) instead of failing; the synthetic ones still run. */
+const haveFixtures = existsSync(fixtureUrl("attention")) && existsSync(fixtureUrl("gpt4"));
+if (!haveFixtures) console.warn("tei.test: real-paper fixtures missing, skipping those tests. Run `docker compose up -d && pnpm fixtures`.");
 function loadFixture(name: string): string {
-  const url = new URL(`../../../test/fixtures/${name}.tei.xml`, import.meta.url);
-  if (!existsSync(url)) throw new Error(`missing fixture ${name}.tei.xml: run \`docker compose up -d && pnpm fixtures\``);
-  return readFileSync(url, "utf8");
+  return readFileSync(fixtureUrl(name), "utf8");
 }
 
-const tei = loadFixture("attention");
-const doc = parseTei(tei);
+const tei = haveFixtures ? loadFixture("attention") : "";
+const doc = haveFixtures ? parseTei(tei) : { title: null, references: [], contexts: [] };
 const ref = (key: string) => {
   const r = doc.references.find((x) => x.key === key);
   if (!r) throw new Error(`no reference ${key}`);
   return r;
 };
 
-describe("parseTei: bibliography", () => {
+describe.skipIf(!haveFixtures)("parseTei: bibliography", () => {
   it("reads every listBibl entry and not the paper's own header", () => {
     expect(doc.references).toHaveLength(40);
     expect(doc.references.map((r) => r.key)).toContain("b39");
@@ -62,7 +64,7 @@ describe("parseTei: bibliography", () => {
   });
 });
 
-describe("parseTei: citation contexts", () => {
+describe.skipIf(!haveFixtures)("parseTei: citation contexts", () => {
   const contextsFor = (key: string) => doc.contexts.filter((c) => c.referenceKey === key);
 
   it("emits one context per in-text bibr ref that points at a bibliography entry", () => {
@@ -109,7 +111,7 @@ describe("parseTei: citation contexts", () => {
 // The PDF has two numbered reference lists that GROBID concatenates into one listBibl
 // (report: b0–b84, system card: b85–b189). GROBID leaves markers whose number exists in
 // both lists unlinked (no @target), so 181 of 202 markers arrive without a target.
-describe("parseTei: numeric markers GROBID could not link", () => {
+describe.skipIf(!haveFixtures)("parseTei: numeric markers GROBID could not link", () => {
   const gpt4 = parseTei(
     loadFixture("gpt4"),
   );
@@ -248,7 +250,7 @@ describe("findArxivId", () => {
   });
 });
 
-describe("parseTei: regressions found in review (gpt4 fixture)", () => {
+describe.skipIf(!haveFixtures)("parseTei: regressions found in review (gpt4 fixture)", () => {
   const gpt4 = parseTei(loadFixture("gpt4"));
 
   it("b102 (empty analytic title) keeps its title instead of storing it as the venue", () => {
