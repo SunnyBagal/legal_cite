@@ -245,14 +245,15 @@ async function main() {
       wallSecondsPerCitation: wallS / results.length,
       latencyMsP50: pct(results.map((r) => r.ms), 0.5),
       latencyMsP90: pct(results.map((r) => r.ms), 0.9),
+      /** Lookups attempted (cache hits, network successes and failures after retries). */
       lookupsPerCitation: results.reduce((a, r) => a + r.lookups, 0) / results.length,
+      failedLookupsPerCitation: results.reduce((a, r) => a + (r.failedLookups ?? 0), 0) / results.length,
       networkCallsPerCitation: results.reduce((a, r) => a + r.networkCalls, 0) / results.length,
       networkCallsByApi: results.reduce<Record<string, number>>((a, r) => {
         for (const [k, v] of Object.entries(r.callsByApi)) a[k] = (a[k] ?? 0) + v;
         return a;
       }, {}),
       fullyColdCitations: cold.length,
-      failedLookupsByCitation: results.reduce((a, r) => a + (r.failedLookups ?? 0), 0),
       degradedCitations: results.filter((r) => r.degraded).length,
     },
   };
@@ -271,7 +272,8 @@ async function main() {
   }
   const c = summary.cost;
   console.log(`\ncost: ${c.wallSeconds.toFixed(0)} s wall at concurrency ${concurrency} = ${c.wallSecondsPerCitation.toFixed(2)} s/citation; latency p50 ${(c.latencyMsP50 / 1000).toFixed(1)} s, p90 ${(c.latencyMsP90 / 1000).toFixed(1)} s`);
-  console.log(`      ${c.lookupsPerCitation.toFixed(2)} lookups/citation, ${c.networkCallsPerCitation.toFixed(2)} network API calls/citation (rest from cache); by API ${JSON.stringify(c.networkCallsByApi)}; ${c.degradedCitations} with a failed lookup`);
+  console.log(`      per citation: ${c.lookupsPerCitation.toFixed(2)} lookups attempted = ${c.networkCallsPerCitation.toFixed(2)} answered by the API + ${c.failedLookupsPerCitation.toFixed(2)} failed after retries + the rest from cache`);
+  console.log(`      successful API calls by API ${JSON.stringify(c.networkCallsByApi)}; ${c.degradedCitations} citations had a failed lookup`);
   console.log(`\nwrote eval/results/citeaudit-summary.json and eval/out/citeaudit-results.jsonl`);
 }
 

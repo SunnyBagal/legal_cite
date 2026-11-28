@@ -1,0 +1,210 @@
+{
+  "dataset": {
+    "name": "CiteAudit",
+    "commit": "99744f032ad3b42a1d09929ddcf7f3379e7320d5",
+    "sha256": "0bf0a7b23d13f2ee355ee0742ffadf9b8bf7f8c025226dc9363d8ea012b1bae5",
+    "rows": 9442,
+    "unique": 9428,
+    "population": {
+      "generated/fake": 2500,
+      "generated/real": 3586,
+      "realworld/fake": 467,
+      "realworld/real": 2875
+    }
+  },
+  "sample": {
+    "perCell": 100,
+    "seed": 42,
+    "n": 400
+  },
+  "flaggedVerdicts": [
+    "NOT_FOUND",
+    "MISMATCH",
+    "PARSE_ERROR"
+  ],
+  "verdicts": {
+    "realworld/real": {
+      "VERIFIED": 81,
+      "AMBIGUOUS": 18,
+      "MISMATCH": 1
+    },
+    "realworld/fake": {
+      "MISMATCH": 11,
+      "NOT_FOUND": 2,
+      "AMBIGUOUS": 68,
+      "VERIFIED": 19
+    },
+    "generated/real": {
+      "VERIFIED": 87,
+      "AMBIGUOUS": 13
+    },
+    "generated/fake": {
+      "NOT_FOUND": 3,
+      "AMBIGUOUS": 45,
+      "VERIFIED": 49,
+      "MISMATCH": 3
+    }
+  },
+  "metrics": {
+    "all": {
+      "confusion": {
+        "tp": 19,
+        "fn": 181,
+        "fp": 1,
+        "tn": 199
+      },
+      "n": 400,
+      "fake": {
+        "precision": 0.95,
+        "recall": 0.095,
+        "f1": 0.17272727272727273
+      },
+      "real": {
+        "precision": 0.5236842105263158,
+        "recall": 0.995,
+        "f1": 0.6862068965517241
+      },
+      "falsePositiveRate": 0.005,
+      "accuracy": 0.545,
+      "prevalence": 0.3147008909630887,
+      "precisionAtDatasetPrevalence": 0.8971735047904
+    },
+    "realworld": {
+      "confusion": {
+        "tp": 13,
+        "fn": 87,
+        "fp": 1,
+        "tn": 99
+      },
+      "n": 200,
+      "fake": {
+        "precision": 0.9285714285714286,
+        "recall": 0.13,
+        "f1": 0.22807017543859648
+      },
+      "real": {
+        "precision": 0.532258064516129,
+        "recall": 0.99,
+        "f1": 0.6923076923076922
+      },
+      "falsePositiveRate": 0.01,
+      "accuracy": 0.56,
+      "prevalence": 0.13973668461998803,
+      "precisionAtDatasetPrevalence": 0.6786273194723899
+    },
+    "generated": {
+      "confusion": {
+        "tp": 6,
+        "fn": 94,
+        "fp": 0,
+        "tn": 100
+      },
+      "n": 200,
+      "fake": {
+        "precision": 1,
+        "recall": 0.06,
+        "f1": 0.11320754716981131
+      },
+      "real": {
+        "precision": 0.5154639175257731,
+        "recall": 1,
+        "f1": 0.6802721088435374
+      },
+      "falsePositiveRate": 0,
+      "accuracy": 0.53,
+      "prevalence": 0.4107788366743345,
+      "precisionAtDatasetPrevalence": 1
+    }
+  },
+  "metricsIfAmbiguousFlagged": {
+    "all": {
+      "confusion": {
+        "tp": 132,
+        "fn": 68,
+        "fp": 32,
+        "tn": 168
+      },
+      "n": 400,
+      "fake": {
+        "precision": 0.8048780487804879,
+        "recall": 0.66,
+        "f1": 0.7252747252747254
+      },
+      "real": {
+        "precision": 0.711864406779661,
+        "recall": 0.84,
+        "f1": 0.7706422018348624
+      },
+      "falsePositiveRate": 0.16,
+      "accuracy": 0.75,
+      "prevalence": 0.3147008909630887,
+      "precisionAtDatasetPrevalence": 0.65448966904859
+    },
+    "realworld": {
+      "confusion": {
+        "tp": 81,
+        "fn": 19,
+        "fp": 19,
+        "tn": 81
+      },
+      "n": 200,
+      "fake": {
+        "precision": 0.81,
+        "recall": 0.81,
+        "f1": 0.81
+      },
+      "real": {
+        "precision": 0.81,
+        "recall": 0.81,
+        "f1": 0.81
+      },
+      "falsePositiveRate": 0.19,
+      "accuracy": 0.81,
+      "prevalence": 0.13973668461998803,
+      "precisionAtDatasetPrevalence": 0.4091528576991304
+    },
+    "generated": {
+      "confusion": {
+        "tp": 51,
+        "fn": 49,
+        "fp": 13,
+        "tn": 87
+      },
+      "n": 200,
+      "fake": {
+        "precision": 0.796875,
+        "recall": 0.51,
+        "f1": 0.6219512195121951
+      },
+      "real": {
+        "precision": 0.6397058823529411,
+        "recall": 0.87,
+        "f1": 0.7372881355932203
+      },
+      "falsePositiveRate": 0.13,
+      "accuracy": 0.69,
+      "prevalence": 0.4107788366743345,
+      "precisionAtDatasetPrevalence": 0.7322620291985895
+    }
+  },
+  "cost": {
+    "wallSeconds": 1834.5063774999999,
+    "concurrency": 8,
+    "wallSecondsPerCitation": 4.58626594375,
+    "latencyMsP50": 43817.560958999966,
+    "latencyMsP90": 47707.185375,
+    "lookupsPerCitation": 3.01,
+    "networkCallsPerCitation": 1.81,
+    "networkCallsByApi": {
+      "s2": 67,
+      "crossref-query": 358,
+      "openalex": 140,
+      "arxiv": 149,
+      "doi": 5,
+      "crossref-doi": 5
+    },
+    "fullyColdCitations": 67,
+    "failedLookupsByCitation": 441,
+    "degradedCitations": 319
+  }
+}
