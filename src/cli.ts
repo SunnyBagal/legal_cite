@@ -12,6 +12,7 @@ import { jsonReporter } from "./report/json.js";
 import { createDb } from "./infra/db/client.js";
 import { createQueuedGateway } from "./infra/http/gateway.js";
 import { runMigrations } from "./infra/db/migrate.js";
+import { preflight } from "./infra/preflight.js";
 import { describeMissingInput, parseSource } from "./pipeline/ingest.js";
 import { createQueues, redisConnection } from "./pipeline/queues.js";
 import { createPaper, getPaperStatus, relevanceSummary, setPaperStatus, verdictCounts } from "./pipeline/store.js";
@@ -40,8 +41,11 @@ program
     if (opts.relevance && !llm) {
       throw new Error("relevance needs an LLM: set ANTHROPIC_API_KEY or OPENAI_API_KEY in .env, or pass --no-relevance");
     }
-    const deadline = Date.now() + Number(opts.timeout) * 60_000;
+    const minutes = Number(opts.timeout);
+    if (!Number.isFinite(minutes) || minutes <= 0) throw new Error(`--timeout must be a positive number of minutes, got ${opts.timeout}`);
+    const deadline = Date.now() + minutes * 60_000;
 
+    await preflight(["postgres", "redis", "redis-cache", "grobid"]);
     await runMigrations();
     const connection = redisConnection();
     const { db, close: closeDb } = createDb();
@@ -132,6 +136,7 @@ program
   .description("Re-render the JSON and HTML reports for a finished run from the database")
   .action(async (id: string, opts: { out: string }) => {
     if (!/^\d+$/.test(id)) throw new Error(`paper id must be a number (the N in "paper #N"), got ${id}`);
+    await preflight(["postgres"]);
     const { db, close } = createDb();
     try {
       const report = await loadReport(db, Number(id));
@@ -148,6 +153,7 @@ program
   .command("migrate")
   .description("Apply database migrations")
   .action(async () => {
+    await preflight(["postgres"]);
     await runMigrations();
     console.log("migrations applied");
   });
