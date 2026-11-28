@@ -15,7 +15,7 @@ Checked on 2026-11-28 by running each piece, not by reading the code. Services c
 
 ## Partial
 
-- **M5 eval.** It is rebuilt around the public CiteAudit benchmark (`pnpm eval:citeaudit`), not the synthetic set first planned. It covers existence only. No relevance eval was run: CiteAudit has no claim/context labels, and I cut the synthetic swap set to finish.
+- **M5 eval.** It is rebuilt around the public CiteAudit benchmark (`pnpm eval:citeaudit`), not the synthetic set first planned, and covers existence only. It ran on 400 citations; see `eval/RESULTS.md`. Strict fake-detection precision is 0.895, recall 0.215, FPR 0.025; flagging AMBIGUOUS too gives precision 0.819, recall 0.635, FPR 0.140. No relevance eval was run: CiteAudit has no claim/context labels, and I cut the synthetic swap set to finish.
 - **arXiv search.** On 2026-11-28 the arXiv search endpoint answered 429 after 15 to 40 s, even at the documented 1 request every 3 s. The gateway now pauses arXiv for 10 minutes on a 429. References that needed arXiv search then come out AMBIGUOUS ("some lookups failed"), never NOT_FOUND. Lookups by arXiv ID are unaffected.
 - **Relevance.** Every verdict is abstract-level and needs human review, by design. It is not evaluated against labels.
 
