@@ -18,7 +18,9 @@ function isNewStyleArxivId(id: string): boolean {
   if (!m) return false;
   const yymm = Number(m[1]) * 100 + Number(m[2]);
   const month = Number(m[2]);
-  if (month < 1 || month > 12 || yymm < 704) return false;
+  const now = new Date();
+  const latest = (now.getUTCFullYear() % 100) * 100 + now.getUTCMonth() + 1;
+  if (month < 1 || month > 12 || yymm < 704 || yymm > latest) return false;
   return m[3]!.length === (yymm >= 1501 ? 5 : 4);
 }
 const OLD_ARXIV = /^[a-z-]+(\.[A-Z]{2})?\/\d{7}(v\d+)?$/;

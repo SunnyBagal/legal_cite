@@ -54,3 +54,10 @@ describe("parseSource: arXiv id validity", () => {
     expect(describeMissingInput("./paper.pdf")).toBe("no such file: ./paper.pdf");
   });
 });
+
+describe("parseSource: arXiv ids from the future", () => {
+  it("rejects a new-style id dated after the current month", () => {
+    expect(parseSource("2999.99999").kind).toBe("pdf");
+    expect(parseSource("1706.03762")).toEqual({ kind: "arxiv", id: "1706.03762" });
+  });
+});
