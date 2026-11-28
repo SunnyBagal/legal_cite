@@ -10,11 +10,12 @@ const fixtureUrl = (name: string) => new URL(`../../../test/fixtures/${name}.tei
 const haveFixtures = existsSync(fixtureUrl("attention")) && existsSync(fixtureUrl("gpt4"));
 if (!haveFixtures) console.warn("tei.test: real-paper fixtures missing, skipping those tests. Run `docker compose up -d && pnpm fixtures`.");
 function loadFixture(name: string): string {
-  return readFileSync(fixtureUrl(name), "utf8");
+  return haveFixtures ? readFileSync(fixtureUrl(name), "utf8") : "";
 }
+/** Parsed fixture, or an empty document when fixtures are missing (skipped describes still run their bodies). */
+const fixtureDoc = (name: string) => (haveFixtures ? parseTei(loadFixture(name)) : { title: null, references: [], contexts: [] });
 
-const tei = haveFixtures ? loadFixture("attention") : "";
-const doc = haveFixtures ? parseTei(tei) : { title: null, references: [], contexts: [] };
+const doc = fixtureDoc("attention");
 const ref = (key: string) => {
   const r = doc.references.find((x) => x.key === key);
   if (!r) throw new Error(`no reference ${key}`);
@@ -112,9 +113,7 @@ describe.skipIf(!haveFixtures)("parseTei: citation contexts", () => {
 // (report: b0–b84, system card: b85–b189). GROBID leaves markers whose number exists in
 // both lists unlinked (no @target), so 181 of 202 markers arrive without a target.
 describe.skipIf(!haveFixtures)("parseTei: numeric markers GROBID could not link", () => {
-  const gpt4 = parseTei(
-    loadFixture("gpt4"),
-  );
+  const gpt4 = fixtureDoc("gpt4");
   const keysFor = (sentencePart: string) =>
     gpt4.contexts.filter((c) => c.sentence.includes(sentencePart)).map((c) => c.referenceKey);
 
@@ -251,7 +250,7 @@ describe("findArxivId", () => {
 });
 
 describe.skipIf(!haveFixtures)("parseTei: regressions found in review (gpt4 fixture)", () => {
-  const gpt4 = parseTei(loadFixture("gpt4"));
+  const gpt4 = fixtureDoc("gpt4");
 
   it("b102 (empty analytic title) keeps its title instead of storing it as the venue", () => {
     const b102 = gpt4.references.find((r) => r.key === "b102");
@@ -328,9 +327,9 @@ describe("parseTei: appended-document boundaries (M3 relevance findings)", () =>
     expect(keysOf(teiDoc({ body, keys: K4 }))).toEqual(["b0", "b1", "b2"]);
   });
 
-  it("gpt4: the system card's own Abstract cites the system card's list", () => {
+  it.skipIf(!haveFixtures)("gpt4: the system card's own Abstract cites the system card's list", () => {
     // Before the fix, "This system card analyzes GPT-4 ... [8,9,10]" linked to b7-b9 (report list).
-    const gpt4 = parseTei(loadFixture("gpt4"));
+    const gpt4 = fixtureDoc("gpt4");
     const card = gpt4.contexts.filter((c) => c.section === "Abstract" && c.sentence.includes("This system card analyzes GPT-4")).map((c) => c.referenceKey);
     expect(card).toEqual(["b92", "b93", "b94"]);
   });
