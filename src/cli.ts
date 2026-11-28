@@ -1,12 +1,12 @@
-import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { constants, existsSync } from "node:fs";
+import { access, mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { Command } from "commander";
 import { config } from "./config.js";
 import { GrobidExtractor } from "./domains/scholarly/grobid.js";
 import { createScholarlyDomain } from "./domains/scholarly/index.js";
 import { arxivIdUrl, parseArxivFeed } from "./domains/scholarly/resolvers/arxiv.js";
-import { loadReport } from "./report/build.js";
+import { loadReport, writeAtomic } from "./report/build.js";
 import { htmlReporter } from "./report/html.js";
 import { jsonReporter } from "./report/json.js";
 import { createDb } from "./infra/db/client.js";
@@ -46,6 +46,11 @@ program
     const deadline = Date.now() + minutes * 60_000;
 
     await preflight(["postgres", "redis", "redis-cache", "grobid"]);
+    // Check --out now, not after every API and LLM call has been paid for.
+    await mkdir(resolve(opts.out), { recursive: true });
+    await access(resolve(opts.out), constants.W_OK).catch(() => {
+      throw new Error(`--out ${opts.out} is not writable`);
+    });
     await runMigrations();
     const connection = redisConnection();
     const { db, close: closeDb } = createDb();
@@ -135,14 +140,19 @@ program
   .option("--out <dir>", "write reports under this directory", "reports")
   .description("Re-render the JSON and HTML reports for a finished run from the database")
   .action(async (id: string, opts: { out: string }) => {
-    if (!/^\d+$/.test(id)) throw new Error(`paper id must be a number (the N in "paper #N"), got ${id}`);
+    if (!/^\d{1,9}$/.test(id)) throw new Error(`paper id must be a number (the N in "paper #N"), got ${id}`);
     await preflight(["postgres"]);
     const { db, close } = createDb();
     try {
+      const paper = await getPaperStatus(db, Number(id)).catch(() => null);
+      if (!paper) throw new Error(`no paper #${id} in the database`);
+      if (paper.status !== DONE_STATUS) {
+        throw new Error(`paper #${id} is ${paper.status}${paper.error ? ` (${paper.error})` : ""}; a report is only written for a finished run`);
+      }
       const report = await loadReport(db, Number(id));
       const dir = join(resolve(opts.out), String(report.paper.id));
       await mkdir(dir, { recursive: true });
-      for (const r of [jsonReporter, htmlReporter]) await writeFile(join(dir, r.filename), r.render(report));
+      for (const r of [jsonReporter, htmlReporter]) await writeAtomic(join(dir, r.filename), r.render(report));
       console.log(`report: ${join(dir, htmlReporter.filename)}`);
     } finally {
       await close();
