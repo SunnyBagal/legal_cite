@@ -11,7 +11,18 @@
     "resolveJsonModule": true,
     "verbatimModuleSyntax": true,
     "noEmit": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ],
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "eval", "scripts", "test", "*.ts"]
+  "include": [
+    "src",
+    "eval",
+    "scripts",
+    "test",
+    "*.ts"
+  ]
 }
