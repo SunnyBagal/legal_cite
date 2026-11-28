@@ -72,12 +72,11 @@ function matchLine(m: ReportRecord): string {
   return `<p class="match">Matched ${link}${detail ? `, ${detail}` : ""}. Source: ${esc(SOURCE_LABEL[m.source] ?? m.source)}.</p>`;
 }
 
-/** Escape the sentence, then highlight the first occurrence of the citation marker. */
+/** Highlight the first occurrence of the citation marker, found in the raw text so it can't land inside an entity. */
 function sentenceHtml(c: ReportContext): string {
-  const s = esc(c.sentence);
-  const marker = esc(c.marker);
-  const i = marker ? s.indexOf(marker) : -1;
-  return i < 0 ? s : `${s.slice(0, i)}<mark>${marker}</mark>${s.slice(i + marker.length)}`;
+  const s = c.sentence;
+  const i = c.marker ? s.indexOf(c.marker) : -1;
+  return i < 0 ? esc(s) : `${esc(s.slice(0, i))}<mark>${esc(c.marker)}</mark>${esc(s.slice(i + c.marker.length))}`;
 }
 
 function contextItem(c: ReportContext): string {
@@ -120,7 +119,7 @@ function summarySentences(rep: PaperReport): string {
     const rel = (["UNRELATED", "PARTIAL", "CANNOT_TELL", "SUPPORTS"] as const)
       .filter((k) => r.verdicts[k])
       .map((k) => `${r.verdicts[k]} ${RELEVANCE_COUNT[k]}`);
-    html += `<p class="lede-sub">Across ${esc(plural(r.contexts, "citing sentence"))} of references that exist: ${esc(rel.join(", ") || "none judged")}${r.missing ? `; ${esc(r.missing)} not judged because a job did not finish` : ""}.</p>`;
+    html += `<p class="lede-sub">Across ${esc(plural(r.contexts, "citing sentence"))} of references that exist: ${esc(rel.join(", ") || "none judged")}${r.notJudged ? `; ${esc(r.notJudged)} of the “can't tell” were never judged by the model (no abstract, a failed call or the budget)` : ""}${r.missing ? `; ${esc(r.missing)} not judged because a job did not finish` : ""}.</p>`;
   } else {
     html += `<p class="lede-sub">Relevance was not checked in this run.</p>`;
   }

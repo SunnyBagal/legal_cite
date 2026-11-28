@@ -85,3 +85,17 @@ describe("json report", () => {
     expect(JSON.parse(jsonReporter.render(rep))).toEqual(rep);
   });
 });
+
+describe("html report (M4 review)", () => {
+  it("highlights a bare numeric marker in the text, never inside an escaped entity", () => {
+    const r = ref({ contexts: [{ section: "S", marker: "39", sentence: "It's shown in 39 papers.", previousSentence: null, linkedBy: "grobid", relevance: null }] });
+    const html = htmlReporter.render(report([r]));
+    expect(html).toContain("It&#39;s shown in <mark>39</mark> papers.");
+  });
+
+  it("says how many can't-tell verdicts the model never made", () => {
+    const rep = report([ref()]);
+    rep.summary.relevance = { contexts: 3, verdicts: { CANNOT_TELL: 2, SUPPORTS: 1 }, notJudged: 2, missing: 0 };
+    expect(htmlReporter.render(rep)).toMatch(/2 of the “can't tell” were never judged by the model/);
+  });
+});
