@@ -443,3 +443,35 @@ before. Fixes landed as separate commits after the M3 feature commits.
     right work, and the "inferred link" rule already covers the risky case.
   - **No startup probe of the model or its parameters.** A misconfigured model now shows up
     as logged failures and as not-judged counts in the summary rather than as a clean result.
+
+## M4 review and wrap-up (2026-11-28)
+
+**Review outcome.** The M4 review ran a test specialist, a maintainability specialist, a security specialist, a performance specialist, a simplification specialist, a design specialist and an adversarial pass.
+- **Coverage.** Most specialists were cut off by a usage limit. The security specialist's read-only commands were then refused by the permission system, so I did the escaping review myself. Only the adversarial pass finished.
+- **Fixed:**
+  - `report` re-rendered failed runs as clean.
+  - Marker highlighting could land inside `&#39;`.
+  - `report.json` leaked absolute PDF paths.
+  - Report writes weren't atomic.
+  - `--out` was only checked after all spend.
+  - Paper ids were unbounded.
+  - Future-dated arXiv ids were accepted.
+  - The bin shim failed silently.
+  - The can't-tell count mixed model verdicts with checks that never ran.
+- **Left open.** `setMaxListeners(1000)` can hide a listener leak. The arXiv title lookup swallows errors.
+
+**A preflight check, not a hang.** ioredis reconnects forever, so a dead Redis made `citecheck run` hang. Every command now pings the services it needs, in parallel with a 5 s timeout. It names each service that is down, redacts URL passwords and prints the `docker compose` command to fix it.
+
+**arXiv 429 pauses arXiv for 10 minutes.** arXiv search answered 429 after 15 to 40 s even at the documented 1 request every 3 s. Five retries with backoff kept hitting a host that had asked us to back off, and stalled every lookup queued behind it. A 429 now sets the same block flag as a 403, with a 600 s TTL. The lookup fails fast and the reference is marked degraded, so it can only be AMBIGUOUS, never NOT_FOUND.
+
+**The eval moves to CiteAudit instead of a synthetic set.** The wrap-up asked for a public benchmark.
+- **Data handling.** CiteAudit (arXiv 2602.23452, github.com/shiiiikw/CiteAudit) publishes `data/benchmark.json` with **no license**. I read that as "all rights reserved": I don't redistribute it. `eval/citeaudit.ts` downloads it from a pinned commit into `.cache/` and checks its sha256. Only aggregate numbers and a few quoted citations, for failure analysis, go into the repo.
+- **Parsing.** Each raw string is parsed by GROBID `processCitationList`, the same parser the pipeline uses on PDFs, then resolved by the production code. A parsing error therefore counts against us, as it would in a real run.
+- **Sampling.** The sample is balanced: 100 per cell of real and fake, generated and real-world. Recall and false-positive rate don't depend on prevalence. Precision is also reported re-weighted to the dataset's own prevalence.
+- **What counts as flagged.** NOT_FOUND or MISMATCH, plus unparseable citations. AMBIGUOUS is reported both ways.
+
+**CheckIfExist was skipped.** Its paper describes a browser-only React app (MIT). I found no public repository or CLI that could run a batch locally within the 30-minute limit.
+
+**Cut to finish:** the Next.js page, the CSV importer, and the synthetic perturbation and relevance-swap sets.
+
+**Graph databases (Neo4j and the like): not needed.** The data is a few tables joined by paper and reference id, and the questions asked of it are per-paper. A useful graph feature would be a canonical `works` table keyed by DOI or arXiv id, shared across papers. Postgres covers that, and co-citation queries too, with a join table and recursive CTEs. A second database would add operations without adding any capability. I did not evaluate "HydraDB": I found nothing it would do here that Postgres plus the Redis cache doesn't already.

@@ -1,6 +1,6 @@
 # Status
 
-Checked on 2026-11-28 by running each piece, not by reading the code. Services came from `docker compose up -d` (Postgres, two Redis instances, GROBID 0.8).
+Checked on 2026-11-28 by running each piece, not by reading the code. Services came from `docker compose up -d` (Postgres, two Redis instances, GROBID 0.9.1 CRF).
 
 ## Works
 
