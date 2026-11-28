@@ -37,6 +37,12 @@ describe("fetchOnce: response classification", () => {
     expect(err).toBeInstanceOf(UnrecoverableError);
     expect(err).not.toBeInstanceOf(ApiBlockedError);
   });
+
+  it("pauses arXiv on 429 (it asks clients to back off) but retries other APIs' 429s", async () => {
+    await expect(fetchOnce("arxiv", "https://x.test/", respond(429, ""))).rejects.toBeInstanceOf(ApiBlockedError);
+    const s2 = await fetchOnce("s2", "https://x.test/", respond(429, "")).catch((e: unknown) => e);
+    expect(s2).not.toBeInstanceOf(UnrecoverableError);
+  });
 });
 
 describe("credentials stay out of cache keys", () => {

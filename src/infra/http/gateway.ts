@@ -96,6 +96,8 @@ export async function fetchOnce(api: ApiName, url: string, fetchFn: typeof fetch
     return { status: 200, body, ttl: CACHE_TTL_S };
   }
   if (res.status === 429 && body.includes("daily_budget")) throw new ApiBlockedError(api, secondsToUtcMidnight(), `${api}: daily budget exhausted`);
+  // arXiv asks clients to back off on 429; retrying 5x with 15-40 s responses stalls every lookup behind it.
+  if (res.status === 429 && api === "arxiv") throw new ApiBlockedError(api, 600, `${api}: HTTP 429 (rate limited; pausing arXiv for 10 min)`);
   if (res.status === 403) throw new ApiBlockedError(api, 3600, `${api}: HTTP 403 (access refused; pausing this API for 1 h)`);
   if (res.status === 429 || res.status >= 500) throw new Error(`${api} HTTP ${res.status}`); // retried with backoff
   throw new UnrecoverableError(`${api} HTTP ${res.status}: ${body.slice(0, 200)}`);
