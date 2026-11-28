@@ -1,3 +1,5 @@
+import { rename, writeFile } from "node:fs/promises";
+import { basename } from "node:path";
 import { asc, eq, inArray } from "drizzle-orm";
 import type { CandidateRecord, ExistenceVerdict, MismatchField, RelevanceLabel } from "../core/types.js";
 import type { Db } from "../infra/db/client.js";
@@ -105,10 +107,18 @@ export async function loadReport(db: Db, paperId: number): Promise<PaperReport> 
   return {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
-    paper: { id: paper.id, sourceKind: paper.sourceKind, source: paper.source, title: paper.title, pdfSha256: paper.pdfSha256 },
+    // Only the file name of a local PDF: an absolute path would leak the user's directory layout when shared.
+    paper: { id: paper.id, sourceKind: paper.sourceKind, source: paper.sourceKind === "pdf" ? basename(paper.source) : paper.source, title: paper.title, pdfSha256: paper.pdfSha256 },
     settings: { relevance: paper.options.relevance, llm: paper.options.llm ?? null, verifierVersion: VERIFIER_VERSION },
     summary: { references: references.length, existence, degraded: references.filter((r) => r.existence.degraded).length, relevance },
     relevanceNotice: RELEVANCE_NOTICE,
     references,
   };
+}
+
+/** Write via a temp file and rename, so a crash or a concurrent writer never leaves a truncated report. */
+export async function writeAtomic(path: string, content: string): Promise<void> {
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tmp, content);
+  await rename(tmp, path);
 }

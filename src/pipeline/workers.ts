@@ -1,9 +1,9 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { UnrecoverableError, Worker, type ConnectionOptions, type Job, type WorkerOptions } from "bullmq";
 import type { CitationDomain, Extractor, RelevanceVerifier } from "../core/types.js";
 import type { Db } from "../infra/db/client.js";
-import { loadReport } from "../report/build.js";
+import { loadReport, writeAtomic } from "../report/build.js";
 import type { Reporter } from "../report/types.js";
 import { ingest, pdfPath, type Source } from "./ingest.js";
 import { defaultJobOptions, STAGES, type Queues, type Stage, type StageJob } from "./queues.js";
@@ -168,7 +168,7 @@ const processors: Partial<Record<Stage, Processor>> = {
     const report = await loadReport(db, paper.id);
     const dir = join(reportDir, String(paper.id));
     await mkdir(dir, { recursive: true });
-    for (const r of reporters) await writeFile(join(dir, r.filename), r.render(report));
+    for (const r of reporters) await writeAtomic(join(dir, r.filename), r.render(report));
     await setPaperStatus(db, paper.id, "reported");
     return { dir };
   },
